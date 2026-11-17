@@ -1,0 +1,6 @@
+{
+  "name": "Avicena",
+  "description": "Plataforma de bioestadística clínica en español con captura electrónica de datos CRF, 21 pruebas estadísticas y copiloto clínico con IA.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

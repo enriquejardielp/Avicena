@@ -1,0 +1,400 @@
+import { useRef, useState } from "react";
+import { Check, Copy, Download } from "lucide-react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ComposedChart,
+  Legend,
+  Line,
+  LineChart,
+  ReferenceLine,
+  ResponsiveContainer,
+  Scatter,
+  ScatterChart,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import { toast } from "sonner";
+import { copyChartImageToClipboard, downloadChartPng } from "../../lib/clipboardExport.ts";
+import type { ResultChart } from "../../lib/types.ts";
+
+const PALETTE = ["#0284C7", "#059669", "#D97706", "#7C3AED", "#E11D48", "#0D9488"];
+
+function formatTick(v: unknown): string {
+  if (typeof v === "number") return Number.isInteger(v) ? String(v) : v.toFixed(2);
+  return String(v ?? "");
+}
+
+function ChartTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: Array<{ name?: string; value?: unknown; color?: string; payload?: Record<string, unknown> }>;
+  label?: unknown;
+}) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0]?.payload;
+  const isBox = row && "q1" in row && "q3" in row && "median" in row;
+  const isRoc = row && "cutoff" in row && "tpr" in row && "fpr" in row;
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-xs shadow-lg backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">
+      {!isRoc && label !== undefined && label !== "" && (
+        <div className="mb-1 font-semibold text-slate-900 dark:text-slate-100">{String(label)}</div>
+      )}
+      {isBox ? (
+        <div className="space-y-0.5 font-mono tabular-nums text-slate-700 dark:text-slate-300">
+          <div>N = {String(row.n)}</div>
+          <div>Mediana: {String(row.median)}</div>
+          <div>
+            RIC: {String(row.q1)} – {String(row.q3)}
+          </div>
+          <div>
+            Rango: {String(row.min)} – {String(row.max)}
+          </div>
+          <div>Media: {String(row.mean)}</div>
+        </div>
+      ) : isRoc ? (
+        <div className="space-y-0.5 font-mono tabular-nums text-slate-700 dark:text-slate-300">
+          <div className="font-sans font-semibold text-slate-900 dark:text-slate-100">
+            Punto de corte: {String(row.cutoff)}
+          </div>
+          <div>Sensibilidad (TPR): {(Number(row.tpr) * 100).toFixed(1)}%</div>
+          <div>1 − Esp. (FPR): {(Number(row.fpr) * 100).toFixed(1)}%</div>
+          <div>Especificidad: {((1 - Number(row.fpr)) * 100).toFixed(1)}%</div>
+        </div>
+      ) : (
+        <div className="space-y-0.5">
+          {payload.map((entry, idx) => (
+            <div key={idx} className="flex items-center justify-between gap-3">
+              <span className="flex items-center gap-1.5 text-slate-600 dark:text-slate-300">
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: entry.color || PALETTE[0] }} />
+                {entry.name || "Valor"}
+              </span>
+              <span className="font-mono font-semibold tabular-nums text-slate-900 dark:text-white">
+                {formatTick(entry.value)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function StatChart({ chart, height = 300 }: { chart: ResultChart; height?: number }) {
+  const chartBoxRef = useRef<HTMLDivElement | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  if (!chart.data || chart.data.length === 0) return null;
+
+  const axisStyle = { fontSize: 11, fill: "currentColor" };
+  const gridColor = "rgba(148, 163, 184, 0.22)";
+  const isOr = chart.meta?.ref === 1 || chart.meta?.refline === 1;
+
+  const subtitle =
+    chart.type === "survival"
+      ? "Estimador de Kaplan-Meier S(t)"
+      : chart.type === "roc"
+        ? `AUC = ${String(chart.meta?.auc ?? "—")}`
+        : chart.type === "box"
+          ? "Mediana, RIC (Q1–Q3) y Media"
+          : chart.type === "scatter"
+            ? `${String(chart.meta?.ylabel ?? "Y")} vs ${String(chart.meta?.xlabel ?? "X")}`
+            : isOr
+              ? "Línea de referencia = 1"
+              : undefined;
+
+  const handleCopyChart = async () => {
+    if (!chartBoxRef.current) return;
+    try {
+      const outcome = await copyChartImageToClipboard(chartBoxRef.current, chart.title, subtitle);
+      if (outcome === "copied") {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+        toast.success("Gráfico copiado como imagen. Ya puedes pegarlo en Word.");
+      } else {
+        toast.info("El navegador restringió el portapapeles de imagen; se descargó el PNG para insertarlo en Word.");
+      }
+    } catch {
+      toast.error("No se pudo copiar el gráfico.");
+    }
+  };
+
+  const handleDownloadChart = async () => {
+    if (!chartBoxRef.current) return;
+    try {
+      await downloadChartPng(chartBoxRef.current, chart.title, subtitle);
+      toast.success("Gráfico descargado en PNG.");
+    } catch {
+      toast.error("No se pudo exportar el gráfico.");
+    }
+  };
+
+  let body: React.ReactNode = null;
+
+  if (chart.type === "survival") {
+    body = (
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={chart.data} margin={{ top: 10, right: 16, left: 0, bottom: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
+          <XAxis
+            dataKey={chart.x}
+            tick={axisStyle}
+            tickLine={false}
+            axisLine={{ stroke: gridColor }}
+            label={{ value: "Tiempo", position: "insideBottomRight", offset: -4, fontSize: 11, fill: "currentColor" }}
+          />
+          <YAxis
+            domain={[0, 1]}
+            tickFormatter={(v) => `${Math.round(Number(v) * 100)}%`}
+            tick={axisStyle}
+            tickLine={false}
+            axisLine={{ stroke: gridColor }}
+          />
+          <Tooltip content={<ChartTooltip />} />
+          <Legend wrapperStyle={{ fontSize: 12 }} />
+          {chart.series.map((s, idx) => (
+            <Line
+              key={s}
+              type="stepAfter"
+              dataKey={s}
+              name={s}
+              stroke={PALETTE[idx % PALETTE.length]}
+              strokeWidth={2.5}
+              dot={false}
+              isAnimationActive={false}
+            />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    );
+  } else if (chart.type === "roc") {
+    body = (
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={chart.data} margin={{ top: 10, right: 16, left: 0, bottom: 12 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
+          <XAxis
+            type="number"
+            dataKey="fpr"
+            domain={[0, 1]}
+            tick={axisStyle}
+            tickLine={false}
+            axisLine={{ stroke: gridColor }}
+            label={{
+              value: "1 − Especificidad (FPR)",
+              position: "insideBottom",
+              offset: -6,
+              fontSize: 11,
+              fill: "currentColor",
+            }}
+          />
+          <YAxis
+            type="number"
+            domain={[0, 1]}
+            tick={axisStyle}
+            tickLine={false}
+            axisLine={{ stroke: gridColor }}
+            label={{
+              value: "Sensibilidad (TPR)",
+              angle: -90,
+              position: "insideLeft",
+              fontSize: 11,
+              fill: "currentColor",
+            }}
+          />
+          <Tooltip content={<ChartTooltip />} />
+          <ReferenceLine
+            segment={[
+              { x: 0, y: 0 },
+              { x: 1, y: 1 },
+            ]}
+            stroke="#94A3B8"
+            strokeDasharray="4 4"
+            strokeWidth={1.5}
+          />
+          <Line
+            type="monotone"
+            dataKey="tpr"
+            name="Sensibilidad"
+            stroke="#0284C7"
+            strokeWidth={2.5}
+            dot={false}
+            isAnimationActive={false}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    );
+  } else if (chart.type === "histogram" || chart.type === "bar" || chart.type === "groupedbar") {
+    body = (
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={chart.data} margin={{ top: 10, right: 16, left: 0, bottom: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
+          <XAxis dataKey={chart.x} tick={axisStyle} tickLine={false} axisLine={{ stroke: gridColor }} />
+          <YAxis tick={axisStyle} tickLine={false} axisLine={{ stroke: gridColor }} />
+          <Tooltip content={<ChartTooltip />} />
+          {chart.series.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
+          {isOr && <ReferenceLine y={1} stroke="#DC2626" strokeDasharray="4 4" strokeWidth={1.5} />}
+          {chart.series.map((s, idx) => (
+            <Bar
+              key={s}
+              dataKey={s}
+              name={s === "count" ? "Frecuencia" : s}
+              fill={PALETTE[idx % PALETTE.length]}
+              radius={[6, 6, 0, 0]}
+              isAnimationActive={false}
+            />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    );
+  } else if (chart.type === "box") {
+    const boxRows = chart.data.map((d) => ({
+      ...d,
+      iqrRange: [Number(d.q1 ?? 0), Number(d.q3 ?? 0)],
+    }));
+
+    body = (
+      <ResponsiveContainer width="100%" height="100%">
+        <ComposedChart data={boxRows} margin={{ top: 12, right: 16, left: 0, bottom: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
+          <XAxis dataKey="group" tick={axisStyle} tickLine={false} axisLine={{ stroke: gridColor }} />
+          <YAxis tick={axisStyle} tickLine={false} axisLine={{ stroke: gridColor }} domain={["auto", "auto"]} />
+          <Tooltip content={<ChartTooltip />} />
+          <Legend wrapperStyle={{ fontSize: 12 }} />
+          <Bar
+            dataKey="iqrRange"
+            name="Rango intercuartílico (Q1–Q3)"
+            fill="#0284C7"
+            fillOpacity={0.28}
+            stroke="#0284C7"
+            strokeWidth={1.5}
+            barSize={44}
+            radius={[4, 4, 4, 4]}
+            isAnimationActive={false}
+          />
+          <Line
+            type="monotone"
+            dataKey="median"
+            name="Mediana"
+            stroke="#0F172A"
+            strokeWidth={2}
+            dot={{ r: 5, fill: "#0284C7", stroke: "#FFFFFF", strokeWidth: 2 }}
+            isAnimationActive={false}
+          />
+          <Line
+            type="monotone"
+            dataKey="mean"
+            name="Media"
+            stroke="#059669"
+            strokeWidth={0}
+            dot={{ r: 4, fill: "#059669" }}
+            isAnimationActive={false}
+          />
+        </ComposedChart>
+      </ResponsiveContainer>
+    );
+  } else {
+    const xmin = Number(chart.meta?.xmin ?? 0);
+    const xmax = Number(chart.meta?.xmax ?? 0);
+    const slope = Number(chart.meta?.slope ?? 0);
+    const intercept = Number(chart.meta?.intercept ?? 0);
+    const hasTrend = Number.isFinite(xmin) && Number.isFinite(xmax) && xmax > xmin;
+
+    body = (
+      <ResponsiveContainer width="100%" height="100%">
+        <ScatterChart margin={{ top: 10, right: 16, left: 0, bottom: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
+          <XAxis
+            type="number"
+            dataKey="x"
+            name={String(chart.meta?.xlabel ?? "X")}
+            tick={axisStyle}
+            tickLine={false}
+            axisLine={{ stroke: gridColor }}
+            domain={["auto", "auto"]}
+          />
+          <YAxis
+            type="number"
+            dataKey="y"
+            name={String(chart.meta?.ylabel ?? "Y")}
+            tick={axisStyle}
+            tickLine={false}
+            axisLine={{ stroke: gridColor }}
+            domain={["auto", "auto"]}
+          />
+          <Tooltip cursor={{ strokeDasharray: "3 3" }} content={<ChartTooltip />} />
+          <Scatter
+            name="Observaciones"
+            data={chart.data}
+            fill="#0284C7"
+            fillOpacity={0.68}
+            isAnimationActive={false}
+          />
+          {hasTrend && (
+            <ReferenceLine
+              segment={[
+                { x: xmin, y: slope * xmin + intercept },
+                { x: xmax, y: slope * xmax + intercept },
+              ]}
+              stroke="#EA580C"
+              strokeWidth={2}
+            />
+          )}
+        </ScatterChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h4 className="font-heading text-sm font-semibold text-slate-900 dark:text-slate-100">{chart.title}</h4>
+          {subtitle && (
+            <span
+              className={
+                chart.type === "roc"
+                  ? "font-mono text-xs text-sky-700 dark:text-sky-400"
+                  : "text-xs text-slate-500 dark:text-slate-400"
+              }
+            >
+              {subtitle}
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={handleCopyChart}
+            data-testid="copy-chart-btn"
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+            title="Copiar gráfico como imagen para pegar en Word"
+          >
+            {copied ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
+            {copied ? "Copiado" : "Copiar gráfico"}
+          </button>
+          <button
+            type="button"
+            onClick={handleDownloadChart}
+            data-testid="download-chart-btn"
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+            title="Descargar gráfico en PNG"
+          >
+            <Download className="h-3.5 w-3.5" />
+            PNG
+          </button>
+        </div>
+      </div>
+
+      <div ref={chartBoxRef} className="text-slate-500 dark:text-slate-400" style={{ width: "100%", height }}>
+        {body}
+      </div>
+    </div>
+  );
+}

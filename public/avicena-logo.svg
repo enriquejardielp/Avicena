@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="112" fill="#0018FF"/>
+  <!-- Robe / Collar lines -->
+  <path d="M98 432C125 385 162 358 205 344" stroke="#FFFFFF" stroke-width="14" stroke-linecap="round"/>
+  <path d="M168 424L194 366" stroke="#FFFFFF" stroke-width="13" stroke-linecap="round"/>
+  <path d="M202 364L214 410L256 350" stroke="#FFFFFF" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M312 418C336 392 365 376 396 368" stroke="#FFFFFF" stroke-width="13" stroke-linecap="round"/>
+  <path d="M342 328C375 335 408 352 434 374" stroke="#FFFFFF" stroke-width="14" stroke-linecap="round"/>
+
+  <!-- Neck & Back Scarf -->
+  <path d="M308 272V358L276 312" stroke="#FFFFFF" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M340 245V332" stroke="#FFFFFF" stroke-width="14" stroke-linecap="round"/>
+
+  <!-- Face Silhouette & Beard -->
+  <path d="M180 144C212 132 255 138 275 170C284 185 284 205 280 222C294 214 314 222 312 246C310 264 294 276 278 272C276 296 264 316 250 328C236 340 225 352 216 368C204 352 198 338 192 356C184 378 164 388 156 376C146 360 156 328 166 310C156 306 150 296 154 282C150 278 148 270 156 262C162 255 162 244 156 232C146 214 148 196 156 184C146 176 154 154 180 144Z" fill="#FFFFFF"/>
+
+  <!-- Facial Features (Blue cut-outs on white face) -->
+  <!-- Eyebrow -->
+  <path d="M156 184C168 174 188 174 206 182" stroke="#0018FF" stroke-width="11" stroke-linecap="round"/>
+  <!-- Eye -->
+  <path d="M164 205C176 198 192 200 202 207" stroke="#0018FF" stroke-width="6.5" stroke-linecap="round"/>
+  <circle cx="182" cy="208" r="7" fill="#0018FF"/>
+  <!-- Nose contour -->
+  <path d="M158 196C162 215 156 232 148 242C144 248 150 256 164 256" stroke="#0018FF" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Mustache & Mouth -->
+  <path d="M152 276C166 266 186 268 198 282C186 280 168 278 152 282" fill="#0018FF"/>
+  <path d="M160 289H182" stroke="#0018FF" stroke-width="5.5" stroke-linecap="round"/>
+  <!-- Cheek & Beard texture -->
+  <path d="M262 224C250 245 232 275 212 292C206 298 198 292 194 282C186 304 174 322 158 342C166 364 184 358 194 342C194 360 206 368 216 350C226 334 244 316 258 298C272 280 278 256 276 232" fill="#0018FF"/>
+  <path d="M202 318L192 346" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round"/>
+  <path d="M224 304L214 334" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round"/>
+  <path d="M244 286L236 312" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round"/>
+  <!-- Ear detail -->
+  <path d="M286 234C295 230 301 238 298 248C295 256 288 256 286 250" stroke="#0018FF" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- Turban Outer & Layered Folds -->
+  <path d="M142 196C124 172 122 132 148 104C178 72 248 56 312 72C368 86 404 128 408 176C412 222 384 256 346 268" stroke="#FFFFFF" stroke-width="15" stroke-linecap="round"/>
+  <path d="M138 148C164 106 238 98 300 132C344 156 366 196 366 244" stroke="#FFFFFF" stroke-width="14" stroke-linecap="round"/>
+  <path d="M148 178C178 134 246 130 302 170C328 188 340 212 342 238" stroke="#FFFFFF" stroke-width="14" stroke-linecap="round"/>
+  <path d="M174 114C212 84 286 82 340 120C374 144 394 178 394 214" stroke="#FFFFFF" stroke-width="13" stroke-linecap="round"/>
+  <path d="M222 76C272 62 332 76 364 110" stroke="#FFFFFF" stroke-width="13" stroke-linecap="round"/>
+  <path d="M294 86C324 94 344 106 358 122" stroke="#FFFFFF" stroke-width="11" stroke-linecap="round"/>
+</svg>

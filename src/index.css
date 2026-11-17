@@ -1,0 +1,64 @@
+@import "tailwindcss";
+@import "@fontsource-variable/outfit";
+@import "@fontsource-variable/plus-jakarta-sans";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --font-heading: 'Outfit Variable', system-ui, -apple-system, sans-serif;
+  --font-sans: 'Plus Jakarta Sans Variable', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+}
+
+:root {
+  --background: #F8FAFC;
+  --foreground: #0F172A;
+  --card: #FFFFFF;
+  --card-foreground: #0F172A;
+  --muted: #F1F5F9;
+  --muted-foreground: #475569;
+  --border: #E2E8F0;
+  --primary: #0284C7;
+  --primary-foreground: #FFFFFF;
+}
+
+.dark {
+  --background: #0B1120;
+  --foreground: #F8FAFC;
+  --card: #111827;
+  --card-foreground: #F9FAFB;
+  --muted: #1F2937;
+  --muted-foreground: #94A3B8;
+  --border: #1F2937;
+  --primary: #38BDF8;
+  --primary-foreground: #0B1120;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  h1, h2, h3, h4 {
+    font-family: var(--font-heading);
+    letter-spacing: -0.02em;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

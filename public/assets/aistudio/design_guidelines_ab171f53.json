@@ -1,0 +1,240 @@
+{
+  "project_name": "MedStat Studio (BioEstadística IA)",
+  "language": "es-ES",
+  "theme_strategy": "Apple Clean Bio-Health aesthetic (warm stone light mode default with high-contrast Apple dark mode toggle), tactile micro-surfaces, frosted glass navigation, crisp border definition",
+  "typography": {
+    "font_family_heading": "Outfit, system-ui, -apple-system, sans-serif",
+    "font_family_body": "Plus Jakarta Sans, system-ui, -apple-system, sans-serif",
+    "font_family_mono": "JetBrains Mono, monospace",
+    "import_statements": [
+      "@import \"@fontsource-variable/outfit\";",
+      "@import \"@fontsource-variable/plus-jakarta-sans\";",
+      "@import \"@fontsource-variable/jetbrains-mono\";"
+    ],
+    "scale_px": {
+      "display": 56,
+      "h1": 40,
+      "h2": 30,
+      "h3": 22,
+      "body": 16,
+      "caption": 14
+    },
+    "typesetting_rules": {
+      "headings": "font-bold tracking-tight text-slate-900 dark:text-slate-100",
+      "overlines": "text-xs font-semibold uppercase tracking-[0.18em] text-cyan-800 dark:text-cyan-400",
+      "body": "leading-relaxed text-slate-700 dark:text-slate-300 text-base",
+      "data_cells": "font-mono text-sm tracking-normal text-slate-800 dark:text-slate-200"
+    }
+  },
+  "colors": {
+    "accent": "#0284C7",
+    "on_accent": "#FFFFFF",
+    "accent_hover": "#0369A1",
+    "surfaces": [
+      {
+        "name": "page",
+        "kind": "solid",
+        "bg": "#F8FAFC",
+        "on_bg": "#0F172A",
+        "on_bg_muted": "#475569",
+        "roles": {
+          "link": "#0284C7",
+          "error": "#B91C1C",
+          "success": "#15803D",
+          "warning": "#B45309",
+          "info": "#0369A1"
+        }
+      },
+      {
+        "name": "page_dark",
+        "kind": "solid",
+        "bg": "#0B1120",
+        "on_bg": "#F8FAFC",
+        "on_bg_muted": "#94A3B8",
+        "roles": {
+          "link": "#38BDF8",
+          "error": "#F87171",
+          "success": "#4ADE80",
+          "warning": "#FBBF24",
+          "info": "#38BDF8"
+        }
+      },
+      {
+        "name": "panel",
+        "kind": "solid",
+        "bg": "#FFFFFF",
+        "on_bg": "#0F172A",
+        "on_bg_muted": "#475569",
+        "roles": {
+          "border": "#E2E8F0",
+          "hover_bg": "#F1F5F9"
+        }
+      },
+      {
+        "name": "panel_dark",
+        "kind": "solid",
+        "bg": "#111827",
+        "on_bg": "#F9FAFB",
+        "on_bg_muted": "#9CA3AF",
+        "roles": {
+          "border": "#1F2937",
+          "hover_bg": "#1F2937"
+        }
+      },
+      {
+        "name": "sidebar",
+        "kind": "solid",
+        "bg": "#F1F5F9",
+        "on_bg": "#0F172A",
+        "on_bg_muted": "#475569"
+      },
+      {
+        "name": "sidebar_dark",
+        "kind": "solid",
+        "bg": "#0D1322",
+        "on_bg": "#F8FAFC",
+        "on_bg_muted": "#94A3B8"
+      },
+      {
+        "name": "header_glass",
+        "kind": "glass",
+        "contrast_against": "#FFFFFF",
+        "guarantee": "backdrop-blur-xl bg-white/80 dark:bg-slate-900/80 border-b border-slate-200/80 dark:border-slate-800/80",
+        "on_bg": "#0F172A",
+        "on_bg_muted": "#475569"
+      },
+      {
+        "name": "ai_assistant_bubble",
+        "kind": "solid",
+        "bg": "#F0F9FF",
+        "on_bg": "#0369A1",
+        "on_bg_muted": "#0C4A6E",
+        "roles": {
+          "code_bg": "#0F172A",
+          "code_fg": "#38BDF8"
+        }
+      },
+      {
+        "name": "badge_role_admin",
+        "kind": "solid",
+        "bg": "#FEE2E2",
+        "on_bg": "#991B1B",
+        "on_bg_muted": "#7F1D1D"
+      },
+      {
+        "name": "badge_role_investigador",
+        "kind": "solid",
+        "bg": "#E0F2FE",
+        "on_bg": "#075985",
+        "on_bg_muted": "#0369A1"
+      },
+      {
+        "name": "badge_role_capturador",
+        "kind": "solid",
+        "bg": "#DCFCE7",
+        "on_bg": "#166534",
+        "on_bg_muted": "#14532D"
+      }
+    ]
+  },
+  "entry_surfaces": {
+    "/": "split hero — brand & clinical study metrics on left, live interactive statistical playground + seeded cohort viewer on right",
+    "/login": "Apple-style clinical portal authentication card with role selector toggle and instant demo doctor login credentials",
+    "/estudios": "asymmetric bento workspace showing active clinical studies, sample size counters, dataset health, and quick actions",
+    "/estadistica": "dual-pane analytical laboratory — statistical test selector (Stata/SPSS suite) and variable mapper on left, interactive Recharts visualizations & APA-formatted tables on right",
+    "/redcap-forms": "modular electronic data capture (EDC) builder with drag-and-drop clinical fields and live responsive patient form preview",
+    "/asistente-ia": "Julius-inspired natural language biostatistics copilot with executable python code chips, interactive p-value interpretations, and export to PDF/Word",
+    "/usuarios": "clinical role access control table (Admin, Investigador Principal, Capturador de Datos) with granular permission toggles"
+  },
+  "grids_and_layouts": {
+    "dashboard_bento": "grid grid-cols-1 md:grid-cols-12 gap-6 p-6 md:p-8",
+    "analysis_split": "grid grid-cols-1 lg:grid-cols-12 gap-6 p-6 min-h-[calc(100vh-4rem)]",
+    "form_builder": "grid grid-cols-1 lg:grid-cols-12 gap-6 p-6",
+    "data_table_wrapper": "overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm",
+    "glass_navbar": "sticky top-0 z-50 w-full backdrop-blur-xl bg-white/85 dark:bg-slate-900/85 border-b border-slate-200/80 dark:border-slate-800/80 px-6 py-3.5 flex items-center justify-between"
+  },
+  "motion": {
+    "transitions": "transition-colors duration-150 ease-out, transform 0.15s ease-out, opacity 0.2s ease-in-out",
+    "card_hover": "hover:-translate-y-0.5 hover:shadow-md transition-all duration-200",
+    "stagger_list": "motion.div with staggerChildren: 0.05, delayChildren: 0.1",
+    "accessibility_reduced_motion": "@media (prefers-reduced-motion: reduce) { * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }"
+  },
+  "accessibility": {
+    "wcag_level": "WCAG AA (minimum 4.5:1 contrast for normal text and data labels)",
+    "data_testids": "Every button, input, tab, selector, data cell, stat card, and chart has explicit kebab-case data-testid (e.g. data-testid='run-ttest-button', data-testid='study-upload-input', data-testid='ai-prompt-input')",
+    "screen_readers": "aria-label on icon-only buttons, aria-live='polite' on statistical computing status and AI message streaming",
+    "color_blind_palettes": "Blue (#0284C7), Teal (#0D9488), Amber (#D97706), Violet (#7C3AED), Coral (#E11D48) with secondary shape markers on scatter/survival curves"
+  },
+  "media": {
+    "image_urls": [
+      {
+        "category": "clinical_team",
+        "description": "Doctor analyzing digital clinical laboratory data on screen",
+        "url": "https://images.pexels.com/photos/6285362/pexels-photo-6285362.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940"
+      },
+      {
+        "category": "scientist_microscope",
+        "description": "Biomedical researcher examining clinical trial samples",
+        "url": "https://images.unsplash.com/photo-1511174511562-5f7f18b874f8?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA4Mzl8MHwxfHNlYXJjaHw0fHxtZWRpY2FsJTIwcmVzZWFyY2glMjBkb2N0b3J8ZW58MHx8fHwxNzk0ODU0MjM1fDA&ixlib=rb-4.1.0&q=85"
+      },
+      {
+        "category": "hero_doctor",
+        "description": "Physician in white coat with stethoscope in clean modern clinical setting",
+        "url": "https://images.unsplash.com/photo-1638202993928-7267aad84c31?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA4Mzl8MHwxfHNlYXJjaHwyfHxtZWRpY2FsJTIwcmVzZWFyY2glMjBkb2N0b3J8ZW58MHx8fHwxNzk0ODU0MjM1fDA&ixlib=rb-4.1.0&q=85"
+      },
+      {
+        "category": "laboratory_analysis",
+        "description": "Healthcare specialist reviewing precision diagnostic bio-markers",
+        "url": "https://images.unsplash.com/photo-1579154204601-01588f351e67?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxNzV8MHwxfHNlYXJjaHwyfHxkb2N0b3IlMjBsYWJvcmF0b3J5JTIwZGF0YXxlbnwwfHx8fDE3OTQ4NTQyMzV8MA&ixlib=rb-4.1.0&q=85"
+      }
+    ]
+  },
+  "component_structure": {
+    "layout_components": [
+      {
+        "path": "frontend/src/components/layout/AppNavbar.tsx",
+        "purpose": "Apple-style frosted topbar with active study switcher, current user role pill, AI quick-trigger, and theme toggle"
+      },
+      {
+        "path": "frontend/src/components/layout/AppSidebar.tsx",
+        "purpose": "Collapsible refined navigation: Proyectos, Datos (Spreadsheet), Bioestadística (SPSS/Stata), Formularios REDCap, Asistente IA, Usuarios & Roles"
+      }
+    ],
+    "feature_components": [
+      {
+        "path": "frontend/src/components/stats/StatsAnalysisWorkbench.tsx",
+        "purpose": "Interactive statistical laboratory with test modules: Descriptivos, T de Student, Mann-Whitney U, Chi-cuadrado, ANOVA unifactorial, Correlación Pearson/Spearman, Regresión Lineal/Logística, Kaplan-Meier con curvas de supervivencia"
+      },
+      {
+        "path": "frontend/src/components/stats/SpreadsheetDataViewer.tsx",
+        "purpose": "High-performance medical dataset grid with variable type indicators (Numérico, Categórico, Fecha, Binario), filtering, missing value detection, and CSV/Excel import/export"
+      },
+      {
+        "path": "frontend/src/components/redcap/RedcapFormBuilder.tsx",
+        "purpose": "REDCap-style CRF designer with field types (Texto, Numérico, Fecha, Desplegable, Radio, Checkbox, Sí/No, Textarea, Validaciones de rango)"
+      },
+      {
+        "path": "frontend/src/components/redcap/PatientDataEntry.tsx",
+        "purpose": "Clean, distraction-free patient record capture form for medical staff and data entry operators (Capturadores)"
+      },
+      {
+        "path": "frontend/src/components/ai/JuliusMedicalCopilot.tsx",
+        "purpose": "Conversational biomedical intelligence chat that explains p-values, odds ratios, hazard ratios in medical Spanish and generates auto-narrated clinical summaries"
+      },
+      {
+        "path": "frontend/src/components/admin/RoleManagementTable.tsx",
+        "purpose": "Role-based access matrix for Admin, Investigador Principal, and Capturador de Datos with user invitation modal"
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "1. Keep Spanish (es-ES) as the UI language throughout: 'Estadística Descriptiva', 'Pruebas de Hipótesis', 'Formularios REDCap (CRF)', 'Asistente IA Médico', 'Valor p', 'Intervalo de Confianza (IC 95%)', 'Razón de Momios (OR)', 'Curva de Supervivencia'.",
+    "2. Implement genuine Python statistical computing endpoints in backend/routers/stats.py using pandas, numpy, and scipy/scikit-survival equivalents so that real p-values, t-statistics, chi2, F-scores, regression coefficients, and Kaplan-Meier survival probabilities compute accurately.",
+    "3. Seed rich pre-loaded clinical datasets: 'Ensayo Clínico CARDIOMED-2026 (N=240 pacientes)', 'Estudio Oncológico ONCO-SURV (Kaplan-Meier survival data)', and 'Registro COVID-Longitud'.",
+    "4. Use Recharts for all scientific charts: Kaplan-Meier Survival Step Lines, Boxplots, Correlation Scatter Plots with Trendlines, Distribution Histograms, and Categorical Bar charts with error bars.",
+    "5. Ensure the REDCap form creator allows building custom fields, validating numeric ranges (e.g. Presión Sistólica: 60-250 mmHg), and immediately filling records with live data sync to the study dataset.",
+    "6. Include the AI Assistant (Julius style) with pre-set clinical prompts: '¿Existe diferencia significativa de supervivencia según el tratamiento?', 'Genera la Tabla 1 para publicación médica', 'Calcula la Odds Ratio de mortalidad en pacientes diabéticos'.",
+    "7. Provide role simulation switcher in the top navigation so the user can easily test the UI as Admin, Investigador Principal, or Capturador de Datos.",
+    "8. Ensure every button, input, tab trigger, and result table cell has a unique data-testid attribute for robust testing."
+  ]
+}
