@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: avicena-bioestadistica
+    name: avicena
     runtime: node
     plan: free
     buildCommand: npm install && npm run build
@@ -9,7 +9,15 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: NODE_VERSION
-        value: 22.18.0
+      - key: APP_ENV
+        value: production
+      - key: AUDIT_HMAC_SECRET
+        generateValue: true
+      - key: VAULT_ENCRYPTION_SECRET
+        generateValue: true
+      - key: WORM_AUDIT_STREAM_ENABLED
+        value: "true"
+      - key: FIREBASE_APP_CHECK_ENFORCED
+        value: "false"
       - key: GEMINI_API_KEY
         sync: false

@@ -707,6 +707,25 @@ describe("Avicena — Suite integral de seguridad, privacidad, RBAC y bioestadí
     assert.equal(prodCfg.hasExplicitAuditSecret, true);
     assert.equal(prodCfg.hasExplicitVaultSecret, true);
 
+    const renderCfg = validateEnvironmentConfig({
+      NODE_ENV: "production",
+      RENDER_EXTERNAL_URL: "https://avicena-clinica.onrender.com/",
+      AUDIT_HMAC_SECRET: "audit-prod-secret-0123456789abcdef01234567",
+      VAULT_ENCRYPTION_SECRET: "vault-prod-secret-fedcba9876543210fedcba98",
+    });
+    assert.deepEqual(renderCfg.allowedOrigins, ["https://avicena-clinica.onrender.com"]);
+
+    assert.throws(
+      () =>
+        validateEnvironmentConfig({
+          NODE_ENV: "production",
+          RENDER_EXTERNAL_URL: "http://localhost:3000",
+          AUDIT_HMAC_SECRET: "audit-prod-secret-0123456789abcdef01234567",
+          VAULT_ENCRYPTION_SECRET: "vault-prod-secret-fedcba9876543210fedcba98",
+        }),
+      /ALLOWED_ORIGINS/
+    );
+
     // Verificar CSP de producción sin 'unsafe-inline' en script-src
     const prevEnv = { ...process.env };
     try {

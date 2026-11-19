@@ -58,10 +58,26 @@ export function validateEnvironmentConfig(env: NodeJS.ProcessEnv = process.env):
   const isProduction = appEnv === "production";
   const isTesting = appEnv === "testing";
 
-  const allowedOrigins = (env.ALLOWED_ORIGINS ?? "")
+  const rawAllowedOrigins = env.ALLOWED_ORIGINS ?? env.CORS_ALLOWED_ORIGINS ?? "";
+  const explicitAllowedOrigins = rawAllowedOrigins
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+
+  const renderExternalUrl = (env.RENDER_EXTERNAL_URL ?? "").trim().replace(/\/+$/, "");
+  const renderHostname = (env.RENDER_EXTERNAL_HOSTNAME ?? "").trim().replace(/\/+$/, "");
+  const renderCandidate = renderExternalUrl || (renderHostname ? `https://${renderHostname}` : "");
+  const isValidRenderHttpsOrigin =
+    /^https:\/\/[a-z0-9.-]+(?::\d+)?$/i.test(renderCandidate) &&
+    !renderCandidate.includes("localhost") &&
+    !renderCandidate.includes("127.0.0.1");
+
+  const allowedOrigins =
+    explicitAllowedOrigins.length > 0
+      ? explicitAllowedOrigins
+      : isValidRenderHttpsOrigin
+        ? [renderCandidate]
+        : [];
 
   const explicitAuditSecret = (env.AUDIT_HMAC_SECRET ?? "").trim();
   const hasExplicitAuditSecret = explicitAuditSecret.length >= 32;
@@ -74,24 +90,28 @@ export function validateEnvironmentConfig(env: NodeJS.ProcessEnv = process.env):
   const vaultPreviousSecrets = parseSecretKeyring(env.VAULT_PREVIOUS_SECRETS, "vault");
 
   if (isProduction) {
+    const prodErrors: string[] = [];
     if (!allowedOrigins.length) {
-      throw new Error("PRODUCTION_CONFIG_ERROR: ALLOWED_ORIGINS debe configurarse explícitamente en producción.");
+      prodErrors.push("ALLOWED_ORIGINS debe configurarse explícitamente en producción.");
     }
     if (allowedOrigins.some((o) => o === "*" || o.includes("localhost") || o.includes("127.0.0.1"))) {
-      throw new Error("PRODUCTION_CONFIG_ERROR: ALLOWED_ORIGINS no puede incluir comodines (*) ni localhost en producción.");
+      prodErrors.push("ALLOWED_ORIGINS no puede incluir comodines (*) ni localhost en producción.");
     }
     if (!hasExplicitAuditSecret) {
-      throw new Error("PRODUCTION_CONFIG_ERROR: AUDIT_HMAC_SECRET (mín. 32 caracteres) es obligatorio en producción.");
+      prodErrors.push("AUDIT_HMAC_SECRET (mín. 32 caracteres) es obligatorio en producción.");
     }
     if (!hasExplicitVaultSecret) {
-      throw new Error(
-        "PRODUCTION_CONFIG_ERROR: VAULT_ENCRYPTION_SECRET (mín. 32 caracteres, separado de AUDIT_HMAC_SECRET) es obligatorio en producción."
+      prodErrors.push(
+        "VAULT_ENCRYPTION_SECRET (mín. 32 caracteres, separado de AUDIT_HMAC_SECRET) es obligatorio en producción."
       );
     }
-    if (explicitVaultSecret === explicitAuditSecret) {
-      throw new Error(
-        "PRODUCTION_CONFIG_ERROR: VAULT_ENCRYPTION_SECRET debe ser criptográficamente distinto de AUDIT_HMAC_SECRET."
+    if (hasExplicitAuditSecret && hasExplicitVaultSecret && explicitVaultSecret === explicitAuditSecret) {
+      prodErrors.push(
+        "VAULT_ENCRYPTION_SECRET debe ser criptográficamente distinto de AUDIT_HMAC_SECRET."
       );
+    }
+    if (prodErrors.length > 0) {
+      throw new Error(`PRODUCTION_CONFIG_ERROR: ${prodErrors.join(" | ")}`);
     }
   }
 
