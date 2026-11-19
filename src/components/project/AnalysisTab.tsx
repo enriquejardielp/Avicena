@@ -5,6 +5,8 @@ import {
   Calculator,
   ClipboardList,
   GitCompare,
+  Pin,
+  PinOff,
   Play,
   Search,
   Stethoscope,
@@ -13,7 +15,13 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { apiPost, errMsg } from "../../lib/api.ts";
-import type { AnalysisResult, Dataset, TestName } from "../../lib/types.ts";
+import { useAuth } from "../../lib/AuthContext.tsx";
+import {
+  getDatasetWithRows,
+  saveAnalysisToProject,
+  updateSavedAnalysisMeta,
+} from "../../lib/firestoreDb.ts";
+import type { AnalysisResult, Dataset, SavedAnalysis, TestName } from "../../lib/types.ts";
 import { cn } from "../../lib/utils.ts";
 import { ResultView } from "../analysis/ResultView.tsx";
 
@@ -233,13 +241,25 @@ const TESTS: TestMeta[] = [
 ];
 
 interface AnalysisTabProps {
+  projectId: string;
   datasets: Dataset[];
   activeDatasetId: string;
   onSelectDataset: (id: string) => void;
   onAskCopilot: (prompt: string) => void;
+  onAnalysisSaved?: (saved: SavedAnalysis) => void;
+  onAnalysisUpdated?: (updated: SavedAnalysis) => void;
 }
 
-export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskCopilot }: AnalysisTabProps) {
+export function AnalysisTab({
+  projectId,
+  datasets,
+  activeDatasetId,
+  onSelectDataset,
+  onAskCopilot,
+  onAnalysisSaved,
+  onAnalysisUpdated,
+}: AnalysisTabProps) {
+  const { user } = useAuth();
   const ds = datasets.find((d) => d.id === activeDatasetId) ?? null;
 
   const numVars = useMemo(() => (ds ? ds.variables.filter((v) => v.type === "numeric") : []), [ds]);
@@ -285,9 +305,11 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
 
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [savedRecord, setSavedRecord] = useState<SavedAnalysis | null>(null);
 
   useEffect(() => {
     setResult(null);
+    setSavedRecord(null);
   }, [activeDatasetId]);
 
   // Smart defaults whenever dataset or selectedTest changes
@@ -434,12 +456,33 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
 
     setRunning(true);
     try {
+      const { dataset: freshDs, rows } = await getDatasetWithRows(projectId, ds);
       const res = await apiPost<AnalysisResult>("/analyze", {
-        dataset_id: ds.id,
+        projectId,
+        dataset: freshDs,
+        rows,
         test: selectedTest,
         params,
       });
       setResult(res);
+      setSavedRecord(null);
+
+      if (user && user.emailVerified) {
+        try {
+          const saved = await saveAnalysisToProject(
+            projectId,
+            freshDs,
+            res,
+            { params, source: "manual" },
+            user
+          );
+          setSavedRecord(saved);
+          onAnalysisSaved?.(saved);
+          toast.success("Análisis guardado automáticamente en «Análisis guardados».");
+        } catch {
+          // Non-fatal: still display result
+        }
+      }
     } catch (err) {
       toast.error(errMsg(err, "No se pudo completar el análisis estadístico."));
     } finally {
@@ -447,9 +490,27 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
     }
   };
 
+  const handleToggleFavorite = async () => {
+    if (!savedRecord || !user) return;
+    const nextPinned = !savedRecord.is_pinned;
+    try {
+      await updateSavedAnalysisMeta(projectId, savedRecord.id, { is_pinned: nextPinned }, user);
+      const updated: SavedAnalysis = {
+        ...savedRecord,
+        is_pinned: nextPinned,
+        updated_at: new Date().toISOString(),
+      };
+      setSavedRecord(updated);
+      onAnalysisUpdated?.(updated);
+      toast.success(nextPinned ? "Análisis fijado en favoritos." : "Análisis retirado de favoritos.");
+    } catch (err) {
+      toast.error(errMsg(err, "No se pudo actualizar el favorito."));
+    }
+  };
+
   if (!ds) {
     return (
-      <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-12 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
+      <div className="apple-card rounded-3xl border border-dashed border-black/[0.12] bg-white p-14 text-center text-sm text-[#6E6E73] dark:border-white/[0.12] dark:bg-[#141416] dark:text-[#98989D]">
         Carga primero una base de datos en la pestaña Datos para ejecutar análisis bioestadísticos.
       </div>
     );
@@ -466,24 +527,28 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
     : TESTS.filter((t) => t.category === activeCategory);
 
   const selectedMeta = TESTS.find((t) => t.id === selectedTest) ?? TESTS[0];
+  const appleSelectClass =
+    "w-full rounded-xl border border-transparent bg-[#F5F5F7] px-3 py-2 text-sm text-[#1D1D1F] transition focus:border-[#0071E3] focus:bg-white focus:outline-none focus:ring-4 focus:ring-[#0071E3]/10 dark:border-white/[0.08] dark:bg-[#1C1C1E] dark:text-[#F5F5F7] dark:focus:border-[#0A84FF] dark:focus:ring-[#0A84FF]/15";
+  const appleSmallInputClass =
+    "w-full rounded-xl border border-transparent bg-[#F5F5F7] px-2.5 py-1.5 text-xs font-mono text-[#1D1D1F] transition focus:border-[#0071E3] focus:bg-white focus:outline-none dark:border-white/[0.08] dark:bg-[#1C1C1E] dark:text-[#F5F5F7] dark:focus:border-[#0A84FF]";
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
       {/* Left rail: categorized test selector & parameter builder */}
       <aside className="lg:col-span-4 space-y-4">
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+        <div className="apple-card rounded-2xl border border-black/[0.06] bg-white p-4 dark:border-white/[0.08] dark:bg-[#141416]">
           <div className="mb-2 flex items-center justify-between gap-2">
-            <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+            <label className="text-[11px] font-semibold uppercase tracking-wider text-[#6E6E73] dark:text-[#98989D]">
               Base activa
             </label>
-            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500">
+            <span className="text-[11px] font-medium text-[#86868B] dark:text-[#98989D]">
               {TESTS.length} pruebas clínicas
             </span>
           </div>
           <select
             value={activeDatasetId}
             onChange={(e) => onSelectDataset(e.target.value)}
-            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-900 focus:border-sky-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            className="w-full rounded-xl border border-transparent bg-[#F5F5F7] px-3 py-2 text-sm font-medium text-[#1D1D1F] transition focus:border-[#0071E3] focus:bg-white focus:outline-none dark:border-white/[0.08] dark:bg-[#1C1C1E] dark:text-[#F5F5F7] dark:focus:border-[#0A84FF]"
           >
             {datasets.map((d) => (
               <option key={d.id} value={d.id}>
@@ -494,28 +559,28 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
 
           {/* Search box */}
           <div className="relative mt-3">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#86868B]" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Buscar prueba (ROC, Cox, NNT, κ, McNemar…)"
               data-testid="test-search-input"
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 py-1.5 pl-8 pr-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-sky-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500"
+              className="w-full rounded-xl border border-transparent bg-[#F5F5F7] py-1.5 pl-8 pr-8 text-xs text-[#1D1D1F] placeholder:text-[#86868B] transition focus:border-[#0071E3] focus:bg-white focus:outline-none focus:ring-4 focus:ring-[#0071E3]/10 dark:border-white/[0.08] dark:bg-[#1C1C1E] dark:text-[#F5F5F7] dark:placeholder:text-[#6E6E73] dark:focus:border-[#0A84FF] dark:focus:ring-[#0A84FF]/15"
             />
             {searchQuery && (
               <button
                 type="button"
                 onClick={() => setSearchQuery("")}
                 aria-label="Limpiar búsqueda"
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#86868B] hover:text-[#1D1D1F] dark:hover:text-white"
               >
                 <X className="h-3.5 w-3.5" />
               </button>
             )}
           </div>
 
-          {/* 6 Clinical Category Tabs (2x3 compact grid, eliminates infinite scroll) */}
+          {/* 6 Clinical Category Tabs */}
           {!trimmedQuery && (
             <div className="mt-3 grid grid-cols-2 gap-1.5" role="tablist" aria-label="Categorías bioestadísticas">
               {CATEGORIES.map((cat) => {
@@ -537,26 +602,26 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                       }
                     }}
                     className={cn(
-                      "flex items-center justify-between gap-1.5 rounded-xl border px-2.5 py-2 text-left text-xs font-medium transition-colors",
+                      "flex items-center justify-between gap-1.5 rounded-xl border px-2.5 py-2 text-left text-xs font-medium transition-all",
                       isActive
-                        ? "border-sky-500 bg-sky-50 text-sky-900 dark:border-sky-500/70 dark:bg-sky-950/70 dark:text-sky-100"
-                        : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+                        ? "border-[#0071E3]/40 bg-[#0071E3]/[0.07] text-[#0071E3] dark:border-[#0A84FF]/50 dark:bg-[#0A84FF]/[0.12] dark:text-[#0A84FF]"
+                        : "border-black/[0.06] bg-white text-[#6E6E73] hover:bg-[#F5F5F7] hover:text-[#1D1D1F] dark:border-white/[0.08] dark:bg-[#1C1C1E]/60 dark:text-[#98989D] dark:hover:bg-[#1C1C1E] dark:hover:text-white"
                     )}
                   >
                     <span className="flex min-w-0 items-center gap-1.5">
-                      <Icon className={cn("h-3.5 w-3.5 shrink-0", isActive ? "text-sky-600 dark:text-sky-400" : "text-slate-400")} />
+                      <Icon className={cn("h-3.5 w-3.5 shrink-0", isActive ? "text-[#0071E3] dark:text-[#0A84FF]" : "text-[#86868B]")} />
                       <span className="truncate">{cat.shortLabel}</span>
                     </span>
-                    <span className="font-mono text-[10px] text-slate-400 dark:text-slate-500">{count}</span>
+                    <span className="font-mono text-[10px] opacity-70">{count}</span>
                   </button>
                 );
               })}
             </div>
           )}
 
-          {/* Filtered tests (only 2-5 visible at once) */}
-          <div className="mt-3">
-            <div className="mb-1.5 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+          {/* Filtered tests */}
+          <div className="mt-3.5">
+            <div className="mb-1.5 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-[#86868B] dark:text-[#98989D]">
               <span>
                 {trimmedQuery
                   ? `Resultados (${visibleTests.length})`
@@ -565,7 +630,7 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
             </div>
 
             {visibleTests.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-slate-200 p-4 text-center text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400">
+              <div className="rounded-xl border border-dashed border-black/[0.12] p-4 text-center text-xs text-[#6E6E73] dark:border-white/[0.12] dark:text-[#98989D]">
                 No hay pruebas que coincidan con «{searchQuery}».
               </div>
             ) : (
@@ -579,21 +644,21 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                       onClick={() => handleSelectTest(t)}
                       data-testid={`test-btn-${t.id}`}
                       className={cn(
-                        "w-full rounded-xl px-3 py-2 text-left transition-colors",
+                        "w-full rounded-xl px-3 py-2.5 text-left transition-all",
                         active
-                          ? "bg-sky-50 text-sky-950 ring-1 ring-sky-300 dark:bg-sky-950/60 dark:text-sky-50 dark:ring-sky-700"
-                          : "border border-slate-100 text-slate-700 hover:bg-slate-50 dark:border-slate-800/80 dark:text-slate-300 dark:hover:bg-slate-800/60"
+                          ? "bg-[#0071E3]/[0.07] text-[#1D1D1F] ring-1 ring-[#0071E3]/40 dark:bg-[#0A84FF]/[0.14] dark:text-white dark:ring-[#0A84FF]/50"
+                          : "border border-black/[0.05] text-[#424245] hover:bg-[#F5F5F7] dark:border-white/[0.06] dark:text-[#D1D1D6] dark:hover:bg-white/[0.04]"
                       )}
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-xs font-semibold">{t.label}</span>
                         {trimmedQuery && (
-                          <span className="text-[10px] text-slate-400">
+                          <span className="text-[10px] text-[#86868B]">
                             {CATEGORIES.find((c) => c.id === t.category)?.shortLabel}
                           </span>
                         )}
                       </div>
-                      <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">{t.desc}</div>
+                      <div className="mt-0.5 text-[11px] text-[#6E6E73] dark:text-[#98989D]">{t.desc}</div>
                     </button>
                   );
                 })}
@@ -603,13 +668,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
         </div>
 
         {/* Dynamic Parameter Form */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3.5 dark:border-slate-800 dark:bg-slate-900">
+        <div className="apple-card rounded-2xl border border-black/[0.06] bg-white p-5 space-y-4 dark:border-white/[0.08] dark:bg-[#141416]">
           <div>
-            <h4 className="font-heading text-sm font-semibold text-slate-900 dark:text-white">
+            <h4 className="font-heading text-sm font-semibold tracking-tight text-[#1D1D1F] dark:text-[#F5F5F7]">
               {selectedMeta.label}
             </h4>
-            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-              <span className="font-medium text-slate-700 dark:text-slate-300">Cuándo usarla:</span>{" "}
+            <p className="mt-1 text-xs leading-relaxed text-[#6E6E73] dark:text-[#98989D]">
+              <span className="font-medium text-[#1D1D1F] dark:text-[#E5E5EA]">Cuándo usarla:</span>{" "}
               {selectedMeta.whenToUse}
             </p>
           </div>
@@ -617,13 +682,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
           {(selectedTest === "ttest" || selectedTest === "mannwhitney" || selectedTest === "anova") && (
             <>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                   Variable de resultado (numérica)
                 </label>
                 <select
                   value={outcome}
                   onChange={(e) => setOutcome(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                   data-testid="param-outcome"
                 >
                   {numVars.map((v) => (
@@ -634,13 +699,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                 </select>
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                   Variable de agrupación {selectedTest === "anova" ? "(≥2 categorías)" : "(2 grupos)"}
                 </label>
                 <select
                   value={groupVar}
                   onChange={(e) => setGroupVar(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                   data-testid="param-group"
                 >
                   {(selectedTest === "anova" ? catVars : twoLevelVars).map((v) => (
@@ -656,13 +721,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
           {selectedTest === "paired_ttest" && (
             <>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                   Medida 1 (basal)
                 </label>
                 <select
                   value={outcome}
                   onChange={(e) => setOutcome(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                 >
                   {numVars.map((v) => (
                     <option key={v.name} value={v.name}>
@@ -672,13 +737,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                 </select>
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                   Medida 2 (seguimiento)
                 </label>
                 <select
                   value={secondVar}
                   onChange={(e) => setSecondVar(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                 >
                   {numVars.map((v) => (
                     <option key={v.name} value={v.name}>
@@ -692,13 +757,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
 
           {selectedTest === "frequencies" && (
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+              <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                 Variable categórica o binaria
               </label>
               <select
                 value={outcome}
                 onChange={(e) => setOutcome(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                className={appleSelectClass}
               >
                 {catVars.map((v) => (
                   <option key={v.name} value={v.name}>
@@ -712,11 +777,11 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
           {selectedTest === "chi2" && (
             <>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">Variable fila</label>
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">Variable fila</label>
                 <select
                   value={outcome}
                   onChange={(e) => setOutcome(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                 >
                   {catVars.map((v) => (
                     <option key={v.name} value={v.name}>
@@ -726,11 +791,11 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                 </select>
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">Variable columna</label>
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">Variable columna</label>
                 <select
                   value={groupVar}
                   onChange={(e) => setGroupVar(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                 >
                   {catVars.map((v) => (
                     <option key={v.name} value={v.name}>
@@ -745,13 +810,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
           {selectedTest === "epidemiology_2x2" && (
             <>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                   Exposición / Factor / Tratamiento (binaria)
                 </label>
                 <select
                   value={groupVar}
                   onChange={(e) => setGroupVar(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                 >
                   {twoLevelVars.map((v) => (
                     <option key={v.name} value={v.name}>
@@ -761,13 +826,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                 </select>
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                   Desenlace clínico (binaria)
                 </label>
                 <select
                   value={outcome}
                   onChange={(e) => setOutcome(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                 >
                   {twoLevelVars.map((v) => (
                     <option key={v.name} value={v.name}>
@@ -782,13 +847,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
           {selectedTest === "mcnemar" && (
             <>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                   Condición binaria 1 (basal / método A)
                 </label>
                 <select
                   value={outcome}
                   onChange={(e) => setOutcome(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                 >
                   {twoLevelVars.map((v) => (
                     <option key={v.name} value={v.name}>
@@ -798,13 +863,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                 </select>
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                   Condición binaria 2 (seguimiento / método B)
                 </label>
                 <select
                   value={secondVar}
                   onChange={(e) => setSecondVar(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                 >
                   {twoLevelVars.map((v) => (
                     <option key={v.name} value={v.name}>
@@ -819,13 +884,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
           {selectedTest === "kappa_agreement" && (
             <>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                   Evaluador / Método 1
                 </label>
                 <select
                   value={outcome}
                   onChange={(e) => setOutcome(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                 >
                   {catVars.map((v) => (
                     <option key={v.name} value={v.name}>
@@ -835,13 +900,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                 </select>
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                   Evaluador / Método 2
                 </label>
                 <select
                   value={secondVar}
                   onChange={(e) => setSecondVar(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                 >
                   {catVars.map((v) => (
                     <option key={v.name} value={v.name}>
@@ -856,13 +921,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
           {selectedTest === "diagnostic_test" && (
             <>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                   Prueba diagnóstica evaluada (binaria)
                 </label>
                 <select
                   value={outcome}
                   onChange={(e) => setOutcome(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                 >
                   {twoLevelVars.map((v) => (
                     <option key={v.name} value={v.name}>
@@ -872,13 +937,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                 </select>
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                   Estándar de oro / Diagnóstico real (binaria)
                 </label>
                 <select
                   value={secondVar}
                   onChange={(e) => setSecondVar(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                 >
                   {twoLevelVars.map((v) => (
                     <option key={v.name} value={v.name}>
@@ -893,13 +958,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
           {selectedTest === "roc_auc" && (
             <>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                   Marcador / Puntuación continua (numérica)
                 </label>
                 <select
                   value={outcome}
                   onChange={(e) => setOutcome(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                 >
                   {numVars.map((v) => (
                     <option key={v.name} value={v.name}>
@@ -909,13 +974,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                 </select>
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                   Evento / Enfermedad (binaria 0/1)
                 </label>
                 <select
                   value={secondVar}
                   onChange={(e) => setSecondVar(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                 >
                   {twoLevelVars.map((v) => (
                     <option key={v.name} value={v.name}>
@@ -930,13 +995,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
           {(selectedTest === "kaplan_meier" || selectedTest === "cox_ph") && (
             <>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                   Tiempo de seguimiento (numérica)
                 </label>
                 <select
                   value={outcome}
                   onChange={(e) => setOutcome(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                 >
                   {numVars.map((v) => (
                     <option key={v.name} value={v.name}>
@@ -946,13 +1011,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                 </select>
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                   Evento (0 = censura, 1 = evento)
                 </label>
                 <select
                   value={secondVar}
                   onChange={(e) => setSecondVar(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                 >
                   {(binVars.length ? binVars : twoLevelVars).map((v) => (
                     <option key={v.name} value={v.name}>
@@ -963,13 +1028,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
               </div>
               {selectedTest === "kaplan_meier" && (
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                  <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                     Estratificar por (opcional, Log-Rank)
                   </label>
                   <select
                     value={groupVar}
                     onChange={(e) => setGroupVar(e.target.value)}
-                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                    className={appleSelectClass}
                   >
                     <option value="">Cohorte completa</option>
                     {catVars.map((v) => (
@@ -985,7 +1050,7 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
 
           {(selectedTest === "linreg" || selectedTest === "logreg" || selectedTest === "poisson_reg") && (
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+              <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                 Variable dependiente (
                 {selectedTest === "logreg"
                   ? "binaria 0/1"
@@ -997,7 +1062,7 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
               <select
                 value={outcome}
                 onChange={(e) => setOutcome(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                className={appleSelectClass}
               >
                 {(selectedTest === "logreg" ? twoLevelVars : numVars).map((v) => (
                   <option key={v.name} value={v.name}>
@@ -1010,13 +1075,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
 
           {selectedTest === "table1" && (
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+              <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                 Estratificar por grupo (opcional)
               </label>
               <select
                 value={groupVar}
                 onChange={(e) => setGroupVar(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                className={appleSelectClass}
               >
                 <option value="">Sin estratificación</option>
                 {catVars.map((v) => (
@@ -1030,18 +1095,18 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
 
           {selectedTest === "correlation" && (
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">Método</label>
-              <div className="grid grid-cols-2 gap-2">
+              <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">Método</label>
+              <div className="grid grid-cols-2 rounded-xl bg-black/[0.045] p-1 dark:bg-white/[0.07]">
                 {(["pearson", "spearman"] as const).map((m) => (
                   <button
                     key={m}
                     type="button"
                     onClick={() => setCorrMethod(m)}
                     className={cn(
-                      "rounded-xl border py-1.5 text-xs font-semibold capitalize transition-colors",
+                      "rounded-lg py-1.5 text-xs font-medium capitalize transition-all",
                       corrMethod === m
-                        ? "border-sky-600 bg-sky-50 text-sky-800 dark:border-sky-400 dark:bg-sky-950/60 dark:text-sky-200"
-                        : "border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300"
+                        ? "bg-white text-[#1D1D1F] shadow-[0_1px_2px_rgba(0,0,0,0.08)] dark:bg-[#2C2C2E] dark:text-white"
+                        : "text-[#6E6E73] hover:text-[#1D1D1F] dark:text-[#98989D]"
                     )}
                   >
                     {m}
@@ -1060,7 +1125,7 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
             selectedTest === "cox_ph" ||
             selectedTest === "table1") && (
             <div>
-              <label className="mb-1.5 block text-xs font-medium text-slate-600 dark:text-slate-300">
+              <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                 {selectedTest === "linreg" ||
                 selectedTest === "logreg" ||
                 selectedTest === "poisson_reg" ||
@@ -1070,7 +1135,7 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                     ? "Medidas repetidas (≥3 numéricas)"
                     : "Variables incluidas"}
               </label>
-              <div className="max-h-48 overflow-y-auto space-y-1 rounded-xl border border-slate-200 p-2 dark:border-slate-700">
+              <div className="max-h-48 overflow-y-auto space-y-1 rounded-xl border border-black/[0.06] bg-[#F5F5F7]/60 p-2 dark:border-white/[0.08] dark:bg-[#1C1C1E]/60">
                 {(selectedTest === "correlation" || selectedTest === "friedman" || selectedTest === "descriptives"
                   ? numVars
                   : allAnalysisVars
@@ -1089,15 +1154,15 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                     return (
                       <label
                         key={v.name}
-                        className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-xs hover:bg-slate-50 dark:hover:bg-slate-800"
+                        className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-xs transition hover:bg-white dark:hover:bg-white/[0.06]"
                       >
                         <input
                           type="checkbox"
                           checked={checked}
                           onChange={() => toggleMultiVar(v.name)}
-                          className="h-3.5 w-3.5 rounded border-slate-300 text-sky-600"
+                          className="h-3.5 w-3.5 rounded border-black/20 text-[#0071E3] focus:ring-[#0071E3] dark:border-white/20 dark:text-[#0A84FF]"
                         />
-                        <span className="font-mono text-slate-800 dark:text-slate-200">{v.name}</span>
+                        <span className="font-mono text-[#1D1D1F] dark:text-[#F5F5F7]">{v.name}</span>
                       </label>
                     );
                   })}
@@ -1108,13 +1173,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
           {selectedTest === "sample_size" && (
             <div className="space-y-3">
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+                <label className="mb-1.5 block text-xs font-medium text-[#424245] dark:text-[#D1D1D6]">
                   Diseño del estudio
                 </label>
                 <select
                   value={ssDesign}
                   onChange={(e) => setSsDesign(e.target.value as "two_proportions" | "two_means" | "correlation")}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  className={appleSelectClass}
                 >
                   <option value="two_proportions">Comparación de 2 proporciones (%)</option>
                   <option value="two_means">Comparación de 2 medias independientes</option>
@@ -1124,13 +1189,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
 
               <div className="grid grid-cols-3 gap-2">
                 <div>
-                  <label className="mb-1 block text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                  <label className="mb-1 block text-[11px] font-medium text-[#6E6E73] dark:text-[#98989D]">
                     Alfa (α)
                   </label>
                   <select
                     value={ssAlpha}
                     onChange={(e) => setSsAlpha(Number(e.target.value))}
-                    className="w-full rounded-xl border border-slate-200 bg-white px-2 py-1.5 text-xs font-mono dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                    className={appleSmallInputClass}
                   >
                     <option value={0.05}>0.05</option>
                     <option value={0.01}>0.01</option>
@@ -1138,13 +1203,13 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                   </select>
                 </div>
                 <div>
-                  <label className="mb-1 block text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                  <label className="mb-1 block text-[11px] font-medium text-[#6E6E73] dark:text-[#98989D]">
                     Potencia (1−β)
                   </label>
                   <select
                     value={ssPower}
                     onChange={(e) => setSsPower(Number(e.target.value))}
-                    className="w-full rounded-xl border border-slate-200 bg-white px-2 py-1.5 text-xs font-mono dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                    className={appleSmallInputClass}
                   >
                     <option value={0.8}>80%</option>
                     <option value={0.85}>85%</option>
@@ -1153,7 +1218,7 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                   </select>
                 </div>
                 <div>
-                  <label className="mb-1 block text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                  <label className="mb-1 block text-[11px] font-medium text-[#6E6E73] dark:text-[#98989D]">
                     Razón n₂/n₁
                   </label>
                   <input
@@ -1164,7 +1229,7 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                     disabled={ssDesign === "correlation"}
                     value={ssRatio}
                     onChange={(e) => setSsRatio(Number(e.target.value) || 1)}
-                    className="w-full rounded-xl border border-slate-200 bg-white px-2 py-1.5 text-xs font-mono disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                    className={cn(appleSmallInputClass, "disabled:opacity-50")}
                   />
                 </div>
               </div>
@@ -1172,7 +1237,7 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
               {ssDesign === "two_proportions" && (
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="mb-1 block text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                    <label className="mb-1 block text-[11px] font-medium text-[#6E6E73] dark:text-[#98989D]">
                       Proporción p₁ (0–1)
                     </label>
                     <input
@@ -1182,11 +1247,11 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                       step={0.01}
                       value={ssP1}
                       onChange={(e) => setSsP1(Number(e.target.value))}
-                      className="w-full rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-mono dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                      className={appleSmallInputClass}
                     />
                   </div>
                   <div>
-                    <label className="mb-1 block text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                    <label className="mb-1 block text-[11px] font-medium text-[#6E6E73] dark:text-[#98989D]">
                       Proporción p₂ (0–1)
                     </label>
                     <input
@@ -1196,7 +1261,7 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                       step={0.01}
                       value={ssP2}
                       onChange={(e) => setSsP2(Number(e.target.value))}
-                      className="w-full rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-mono dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                      className={appleSmallInputClass}
                     />
                   </div>
                 </div>
@@ -1205,7 +1270,7 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
               {ssDesign === "two_means" && (
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="mb-1 block text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                    <label className="mb-1 block text-[11px] font-medium text-[#6E6E73] dark:text-[#98989D]">
                       Diferencia mínima (Δ)
                     </label>
                     <input
@@ -1214,11 +1279,11 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                       step={0.5}
                       value={ssDiff}
                       onChange={(e) => setSsDiff(Number(e.target.value))}
-                      className="w-full rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-mono dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                      className={appleSmallInputClass}
                     />
                   </div>
                   <div>
-                    <label className="mb-1 block text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                    <label className="mb-1 block text-[11px] font-medium text-[#6E6E73] dark:text-[#98989D]">
                       DE esperada (σ)
                     </label>
                     <input
@@ -1227,7 +1292,7 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                       step={0.5}
                       value={ssSd}
                       onChange={(e) => setSsSd(Number(e.target.value))}
-                      className="w-full rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-mono dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                      className={appleSmallInputClass}
                     />
                   </div>
                 </div>
@@ -1235,7 +1300,7 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
 
               {ssDesign === "correlation" && (
                 <div>
-                  <label className="mb-1 block text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                  <label className="mb-1 block text-[11px] font-medium text-[#6E6E73] dark:text-[#98989D]">
                     Correlación mínima esperada (r)
                   </label>
                   <input
@@ -1245,7 +1310,7 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
                     step={0.05}
                     value={ssR}
                     onChange={(e) => setSsR(Number(e.target.value))}
-                    className="w-full rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-mono dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                    className={appleSmallInputClass}
                   />
                 </div>
               )}
@@ -1257,7 +1322,7 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
             disabled={running}
             onClick={runAnalysis}
             data-testid="run-analysis-btn"
-            className="flex w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-700 disabled:opacity-60 dark:bg-sky-500 dark:hover:bg-sky-600"
+            className="flex w-full items-center justify-center gap-2 rounded-full bg-[#0071E3] px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[#0077ED] disabled:opacity-60 dark:bg-[#0A84FF] dark:hover:bg-[#1E8EFF]"
           >
             <Play className="h-4 w-4" />
             {running ? "Calculando…" : "Ejecutar análisis"}
@@ -1268,18 +1333,41 @@ export function AnalysisTab({ datasets, activeDatasetId, onSelectDataset, onAskC
       {/* Right stage: analytical results */}
       <section className="lg:col-span-8">
         {result ? (
-          <ResultView result={result} onAskCopilot={onAskCopilot} />
+          <div className="space-y-4">
+            {savedRecord && (
+              <div className="apple-card flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-black/[0.06] bg-white px-4 py-2.5 text-xs dark:border-white/[0.08] dark:bg-[#141416]">
+                <span className="text-[#6E6E73] dark:text-[#98989D]">
+                  Guardado automáticamente en <strong className="font-medium text-[#1D1D1F] dark:text-[#F5F5F7]">Análisis guardados</strong>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void handleToggleFavorite()}
+                  data-testid="pin-active-analysis-btn"
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                    savedRecord.is_pinned
+                      ? "border-amber-300/80 bg-amber-50 text-amber-800 hover:bg-amber-100 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300"
+                      : "border-black/[0.08] bg-white text-[#1D1D1F] hover:bg-[#F5F5F7] dark:border-white/[0.12] dark:bg-[#1C1C1E] dark:text-[#F5F5F7] dark:hover:bg-white/[0.08]"
+                  )}
+                >
+                  {savedRecord.is_pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+                  {savedRecord.is_pinned ? "Favorito fijado" : "Fijar favorito"}
+                </button>
+              </div>
+            )}
+            <ResultView result={result} onAskCopilot={onAskCopilot} />
+          </div>
         ) : (
-          <div className="flex h-full min-h-[420px] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center dark:border-slate-700 dark:bg-slate-900">
-            <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-sky-50 text-sky-600 dark:bg-sky-950/60 dark:text-sky-400">
+          <div className="apple-card flex h-full min-h-[440px] flex-col items-center justify-center rounded-3xl border border-dashed border-black/[0.12] bg-white p-12 text-center dark:border-white/[0.12] dark:bg-[#141416]">
+            <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#0071E3]/10 text-[#0071E3] dark:bg-[#0A84FF]/15 dark:text-[#0A84FF]">
               <BarChart3 className="h-6 w-6" />
             </span>
-            <h3 className="mt-4 font-heading text-lg font-semibold text-slate-900 dark:text-white">
+            <h3 className="mt-4 font-heading text-lg font-semibold tracking-tight text-[#1D1D1F] dark:text-[#F5F5F7]">
               Mesa de trabajo bioestadística
             </h3>
-            <p className="mt-1.5 max-w-md text-sm text-slate-500 dark:text-slate-400">
+            <p className="mt-1.5 max-w-md text-sm leading-relaxed text-[#6E6E73] dark:text-[#98989D]">
               Explora las 6 categorías clínicas en el panel izquierdo, elige una de las {TESTS.length} pruebas y pulsa{" "}
-              <strong className="text-slate-700 dark:text-slate-200">Ejecutar análisis</strong> para generar tablas APA, intervalos de confianza y gráficos interactivos.
+              <strong className="font-medium text-[#1D1D1F] dark:text-[#F5F5F7]">Ejecutar análisis</strong> para generar tablas APA, intervalos de confianza y gráficos interactivos.
             </p>
           </div>
         )}

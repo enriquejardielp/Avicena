@@ -8,3 +8,11 @@ coverage/
 !.env.example
 .estadimed-data.json
 .avicena-data.json
+*-data.json
+.avicena*
+123123
+*.sqlite
+*.db
+service-account*.json
+*firebase-adminsdk*.json
+.firebase/

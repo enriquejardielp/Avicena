@@ -6,38 +6,41 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
-  --font-heading: 'Outfit Variable', system-ui, -apple-system, sans-serif;
-  --font-sans: 'Plus Jakarta Sans Variable', system-ui, -apple-system, sans-serif;
-  --font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+  --font-heading: 'Outfit Variable', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-sans: 'Plus Jakarta Sans Variable', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, monospace;
 }
 
 :root {
-  --background: #F8FAFC;
-  --foreground: #0F172A;
+  --background: #F5F5F7;
+  --foreground: #1D1D1F;
   --card: #FFFFFF;
-  --card-foreground: #0F172A;
-  --muted: #F1F5F9;
-  --muted-foreground: #475569;
-  --border: #E2E8F0;
-  --primary: #0284C7;
+  --card-foreground: #1D1D1F;
+  --muted: #ECECEF;
+  --muted-foreground: #6E6E73;
+  --border: rgba(0, 0, 0, 0.08);
+  --primary: #0071E3;
   --primary-foreground: #FFFFFF;
 }
 
 .dark {
-  --background: #0B1120;
-  --foreground: #F8FAFC;
-  --card: #111827;
-  --card-foreground: #F9FAFB;
-  --muted: #1F2937;
-  --muted-foreground: #94A3B8;
-  --border: #1F2937;
-  --primary: #38BDF8;
-  --primary-foreground: #0B1120;
+  --background: #000000;
+  --foreground: #F5F5F7;
+  --card: #141416;
+  --card-foreground: #F5F5F7;
+  --muted: #1D1D1F;
+  --muted-foreground: #98989D;
+  --border: rgba(255, 255, 255, 0.1);
+  --primary: #0A84FF;
+  --primary-foreground: #FFFFFF;
 }
 
 @layer base {
   * {
     border-color: var(--border);
+  }
+  html {
+    scroll-behavior: smooth;
   }
   body {
     background-color: var(--background);
@@ -45,10 +48,17 @@
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
   h1, h2, h3, h4 {
     font-family: var(--font-heading);
-    letter-spacing: -0.02em;
+    letter-spacing: -0.025em;
+  }
+  .dark body,
+  .dark h1,
+  .dark h2,
+  .dark h3 {
+    letter-spacing: -0.015em;
   }
 }
 
@@ -56,9 +66,46 @@
   font-variant-numeric: tabular-nums;
 }
 
+.apple-card {
+  background-color: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03), 0 8px 24px -8px rgba(0, 0, 0, 0.05);
+}
+
+.dark .apple-card {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 12px 32px -12px rgba(0, 0, 0, 0.6);
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #1d1d1f !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-report-backdrop {
+    position: static !important;
+    padding: 0 !important;
+    background: transparent !important;
+  }
+  .print-report-sheet {
+    max-height: none !important;
+    height: auto !important;
+    max-width: 100% !important;
+    border: none !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+  }
+  .print-report-scroll {
+    overflow: visible !important;
+    padding: 0 !important;
   }
 }

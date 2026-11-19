@@ -7,13 +7,20 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // 2. Hardened Global Primitives
+    // 2. Hardened Global Primitives (no get/exists allowed inside allow list)
     function isSignedIn() {
       return request.auth != null;
     }
 
     function isVerifiedUser() {
       return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function hasMfaClaim() {
+      return isVerifiedUser()
+        && 'firebase' in request.auth.token
+        && 'sign_in_second_factor' in request.auth.token.firebase
+        && request.auth.token.firebase.sign_in_second_factor != null;
     }
 
     function isOwner(userId) {
@@ -24,12 +31,29 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidMetaShardId(metaId) {
+      return metaId.matches('^shard_(crfRecordIds|crfVersionIds|auditLogIds|vaultIds|consentIds|queryIds|deviationIds|signatureIds)_[0-9]+$');
+    }
+
     function incoming() {
       return request.resource.data;
     }
 
     function existing() {
       return resource.data;
+    }
+
+    function isBoundedIdList(arr, maxLen) {
+      return arr is list && arr.size() <= maxLen && (arr.size() == 0 || (arr[0] is string && arr[0].size() <= 128));
+    }
+
+    function isInviteUnexpired(invData) {
+      return ('expiresAt' in invData && invData.expiresAt is timestamp && invData.expiresAt > request.time)
+        || (!('expiresAt' in invData) && invData.createdAt + duration.value(7, 'd') > request.time);
+    }
+
+    function isValidRoleName(role) {
+      return role in ['admin', 'coordinador', 'investigador', 'monitor_clinico', 'estadistico', 'admin_tecnico', 'capturador'];
     }
 
     // 3. Entity Validation Blueprints (synchronized with firebase-blueprint.json)
@@ -39,6 +63,35 @@ service cloud.firestore {
         && data.uid is string && data.uid == request.auth.uid && isValidId(data.uid)
         && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
         && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserProjectRef(data) {
+      return data.keys().hasAll(['projectId', 'name', 'description', 'ownerId', 'role', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'name', 'description', 'ownerId', 'role', 'createdAt', 'updatedAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 160
+        && data.description is string && data.description.size() <= 1000
+        && data.ownerId is string && isValidId(data.ownerId)
+        && isValidRoleName(data.role)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidProjectInvite(data) {
+      return data.keys().hasAll(['projectId', 'projectName', 'projectOwnerId', 'invitedByUid', 'email', 'name', 'role', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'projectName', 'projectOwnerId', 'invitedByUid', 'email', 'name', 'role', 'status', 'acceptedUid', 'expiresAt', 'createdAt', 'updatedAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.projectName is string && data.projectName.size() >= 1 && data.projectName.size() <= 160
+        && data.projectOwnerId is string && isValidId(data.projectOwnerId)
+        && data.invitedByUid is string && isValidId(data.invitedByUid)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && isValidRoleName(data.role)
+        && data.status in ['pending', 'accepted']
+        && (!('acceptedUid' in data) || data.acceptedUid == null || (data.acceptedUid is string && isValidId(data.acceptedUid)))
+        && (!('expiresAt' in data) || data.expiresAt is timestamp)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -53,37 +106,471 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
-    function isValidProjectMember(data) {
-      return data.keys().hasAll(['projectId', 'email', 'name', 'role', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['projectId', 'userId', 'email', 'name', 'role', 'createdAt', 'updatedAt'])
+    function isValidStudyGovernance(data) {
+      return data.keys().hasAll(['projectId', 'aiEnabled', 'aiAllowClinicalText', 'aiAllowDatasetContext', 'aiDpaConfirmed', 'requireMfa', 'updatedBy', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'aiEnabled', 'aiAllowClinicalText', 'aiAllowDatasetContext', 'aiDpaConfirmed', 'requireMfa', 'requireActiveConsent', 'updatedBy', 'updatedAt'])
         && data.projectId is string && isValidId(data.projectId)
-        && (!('userId' in data) || data.userId == null || (data.userId is string && data.userId.size() <= 128))
+        && data.aiEnabled is bool
+        && data.aiAllowClinicalText is bool
+        && data.aiAllowDatasetContext is bool
+        && data.aiDpaConfirmed is bool
+        && data.requireMfa is bool
+        && (!('requireActiveConsent' in data) || data.requireActiveConsent is bool)
+        && data.updatedBy is string && isValidId(data.updatedBy)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStudyLifecycle(data) {
+      return data.keys().hasAll(['projectId', 'studyStatus', 'protocolVersion', 'amendments', 'updatedBy', 'updatedByName', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'studyStatus', 'protocolVersion', 'amendments', 'lastStatusReason', 'updatedBy', 'updatedByName', 'updatedAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.studyStatus in ['borrador', 'reclutamiento', 'seguimiento', 'cerrado', 'bloqueado', 'archivado']
+        && data.protocolVersion is string && data.protocolVersion.size() >= 1 && data.protocolVersion.size() <= 64
+        && data.amendments is list && data.amendments.size() <= 100
+        && (data.amendments.size() == 0 || data.amendments[0] is map)
+        && (!('lastStatusReason' in data) || (data.lastStatusReason is string && data.lastStatusReason.size() <= 500))
+        && data.updatedBy is string && isValidId(data.updatedBy)
+        && data.updatedByName is string && data.updatedByName.size() >= 1 && data.updatedByName.size() <= 120
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidProjectMetaIndex(data) {
+      return data.keys().hasAll(['projectId', 'memberIds', 'datasetIds', 'formIds', 'crfRecordIds', 'analysisIds', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'memberIds', 'datasetIds', 'formIds', 'inviteIds', 'crfRecordIds', 'crfVersionIds', 'vaultIds', 'consentIds', 'auditLogIds', 'lastAuditHash', 'analysisIds', 'shardCounts', 'updatedAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && isBoundedIdList(data.memberIds, 50)
+        && isBoundedIdList(data.datasetIds, 100)
+        && isBoundedIdList(data.formIds, 100)
+        && (!('inviteIds' in data) || isBoundedIdList(data.inviteIds, 100))
+        && isBoundedIdList(data.crfRecordIds, 2000)
+        && isBoundedIdList(data.analysisIds, 500)
+        && (!('crfVersionIds' in data) || isBoundedIdList(data.crfVersionIds, 5000))
+        && (!('vaultIds' in data) || isBoundedIdList(data.vaultIds, 2000))
+        && (!('consentIds' in data) || isBoundedIdList(data.consentIds, 2000))
+        && (!('auditLogIds' in data) || isBoundedIdList(data.auditLogIds, 3000))
+        && (!('lastAuditHash' in data) || (data.lastAuditHash is string && data.lastAuditHash.size() <= 128))
+        && (!('shardCounts' in data) || (data.shardCounts is map && data.shardCounts.keys().hasOnly(['crfRecordIds', 'crfVersionIds', 'auditLogIds', 'vaultIds', 'consentIds', 'queryIds', 'deviationIds', 'signatureIds'])))
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMetaShard(data) {
+      return data.keys().hasAll(['projectId', 'kind', 'shardIndex', 'ids', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'kind', 'shardIndex', 'ids', 'updatedAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.kind in ['crfRecordIds', 'crfVersionIds', 'auditLogIds', 'vaultIds', 'consentIds', 'queryIds', 'deviationIds', 'signatureIds']
+        && data.shardIndex is int && data.shardIndex >= 0 && data.shardIndex <= 10000
+        && isBoundedIdList(data.ids, 500)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMemberIndex(data) {
+      return data.keys().hasAll(['projectId', 'userId', 'crfRecordIds', 'chatMessageIds', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'userId', 'crfRecordIds', 'chatMessageIds', 'updatedAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.userId is string && isValidId(data.userId)
+        && isBoundedIdList(data.crfRecordIds, 2000)
+        && isBoundedIdList(data.chatMessageIds, 500)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidProjectMember(data) {
+      return data.keys().hasAll(['projectId', 'projectOwnerId', 'userId', 'email', 'name', 'role', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'projectOwnerId', 'userId', 'email', 'name', 'role', 'status', 'inviteId', 'createdAt', 'updatedAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.projectOwnerId is string && isValidId(data.projectOwnerId)
+        && data.userId is string && isValidId(data.userId)
         && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
-        && data.role in ['admin', 'investigador', 'capturador']
+        && isValidRoleName(data.role)
+        && (!('status' in data) || data.status in ['active', 'suspended'])
+        && (!('inviteId' in data) || data.inviteId == null || (data.inviteId is string && isValidId(data.inviteId)))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
 
-    // 4. Project Role Helpers
+    function isValidClinicalDataset(data) {
+      return data.keys().hasAll(['projectId', 'projectOwnerId', 'name', 'source', 'variables', 'nRows', 'chunkCount', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'projectOwnerId', 'name', 'source', 'formId', 'variables', 'nRows', 'chunkCount', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.projectOwnerId is string && isValidId(data.projectOwnerId)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 160
+        && data.source in ['upload', 'form']
+        && (!('formId' in data) || data.formId == null || (data.formId is string && isValidId(data.formId)))
+        && data.variables is list && data.variables.size() <= 300
+        && (data.variables.size() == 0 || data.variables[0] is map)
+        && data.nRows is int && data.nRows >= 0 && data.nRows <= 50000
+        && data.chunkCount is int && data.chunkCount >= 0 && data.chunkCount <= 500
+        && data.createdBy is string && isValidId(data.createdBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDatasetChunk(data) {
+      return data.keys().hasAll(['projectId', 'datasetId', 'chunkIndex', 'rows', 'updatedBy', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'datasetId', 'chunkIndex', 'rows', 'updatedBy', 'updatedAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.datasetId is string && isValidId(data.datasetId)
+        && data.chunkIndex is int && data.chunkIndex >= 0 && data.chunkIndex <= 500
+        && data.rows is list && data.rows.size() <= 200
+        && (data.rows.size() == 0 || data.rows[0] is map)
+        && data.updatedBy is string && isValidId(data.updatedBy)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidClinicalForm(data) {
+      return data.keys().hasAll(['projectId', 'projectOwnerId', 'datasetId', 'name', 'description', 'fields', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'projectOwnerId', 'datasetId', 'name', 'description', 'fields', 'formVersion', 'createdBy', 'createdAt', 'updatedAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.projectOwnerId is string && isValidId(data.projectOwnerId)
+        && data.datasetId is string && isValidId(data.datasetId)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 160
+        && data.description is string && data.description.size() <= 1000
+        && data.fields is list && data.fields.size() >= 1 && data.fields.size() <= 200
+        && data.fields[0] is map
+        && (!('formVersion' in data) || (data.formVersion is int && data.formVersion >= 1))
+        && data.createdBy is string && isValidId(data.createdBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCrfRecord(data) {
+      return data.keys().hasAll(['projectId', 'projectOwnerId', 'formId', 'datasetId', 'seq', 'data', 'createdBy', 'updatedBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'projectOwnerId', 'formId', 'datasetId', 'subjectPseudoId', 'status', 'version', 'formVersion', 'lastChangeReason', 'lastSignatureId', 'seq', 'data', 'createdBy', 'updatedBy', 'createdAt', 'updatedAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.projectOwnerId is string && isValidId(data.projectOwnerId)
+        && data.formId is string && isValidId(data.formId)
+        && data.datasetId is string && isValidId(data.datasetId)
+        && (!('subjectPseudoId' in data) || data.subjectPseudoId == null || (data.subjectPseudoId is string && data.subjectPseudoId.size() >= 4 && data.subjectPseudoId.size() <= 64 && isValidId(data.subjectPseudoId)))
+        && (!('status' in data) || data.status in ['borrador', 'completado', 'enviado', 'verificado', 'bloqueado'])
+        && (!('version' in data) || (data.version is int && data.version >= 1))
+        && (!('formVersion' in data) || (data.formVersion is int && data.formVersion >= 1))
+        && (!('lastChangeReason' in data) || (data.lastChangeReason is string && data.lastChangeReason.size() <= 500))
+        && (!('lastSignatureId' in data) || data.lastSignatureId == null || (data.lastSignatureId is string && isValidId(data.lastSignatureId)))
+        && data.seq is int && data.seq >= 0
+        && data.data is map && data.data.keys().size() <= 250
+        && data.createdBy is string && isValidId(data.createdBy)
+        && data.updatedBy is string && isValidId(data.updatedBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isUnlockedCrf(data) {
+      return !('status' in data) || data.status in ['borrador', 'completado', 'enviado'];
+    }
+
+    function isValidCrfVersion(data) {
+      return data.keys().hasAll(['projectId', 'recordId', 'version', 'newStatus', 'previousData', 'newData', 'changedBy', 'changedByName', 'changedAt', 'reason'])
+        && data.keys().hasOnly(['projectId', 'recordId', 'version', 'formVersion', 'previousStatus', 'newStatus', 'previousData', 'newData', 'changedBy', 'changedByName', 'changedAt', 'reason', 'signatureId'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.recordId is string && isValidId(data.recordId)
+        && data.version is int && data.version >= 1
+        && (!('formVersion' in data) || (data.formVersion is int && data.formVersion >= 1))
+        && (!('previousStatus' in data) || data.previousStatus == null || data.previousStatus in ['borrador', 'completado', 'enviado', 'verificado', 'bloqueado'])
+        && data.newStatus in ['borrador', 'completado', 'enviado', 'verificado', 'bloqueado']
+        && data.previousData is map
+        && data.newData is map
+        && data.changedBy is string && isValidId(data.changedBy) && data.changedBy == request.auth.uid
+        && data.changedByName is string && data.changedByName.size() >= 1 && data.changedByName.size() <= 120
+        && data.changedAt is timestamp
+        && data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 500
+        && (!('signatureId' in data) || data.signatureId == null || (data.signatureId is string && isValidId(data.signatureId)));
+    }
+
+    function isValidIdentityVaultDoc(data) {
+      return data.keys().hasAll(['projectId', 'subjectPseudoId', 'blindIndex', 'sealedPayload', 'createdBy', 'createdAt'])
+        && data.keys().hasOnly(['projectId', 'subjectPseudoId', 'blindIndex', 'sealedPayload', 'createdBy', 'createdAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.subjectPseudoId is string && data.subjectPseudoId.size() >= 4 && data.subjectPseudoId.size() <= 64 && isValidId(data.subjectPseudoId)
+        && data.blindIndex is string && data.blindIndex.size() >= 32 && data.blindIndex.size() <= 128 && isValidId(data.blindIndex)
+        && data.sealedPayload is map
+        && data.sealedPayload.keys().hasAll(['version', 'iv', 'tag', 'ciphertext'])
+        && data.sealedPayload.keys().hasOnly(['version', 'keyId', 'iv', 'tag', 'ciphertext'])
+        && data.sealedPayload.version in ['aes-256-gcm-v1', 'aes-256-gcm-v2']
+        && (!('keyId' in data.sealedPayload) || (data.sealedPayload.keyId is string && data.sealedPayload.keyId.size() >= 1 && data.sealedPayload.keyId.size() <= 64))
+        && data.sealedPayload.iv is string && data.sealedPayload.iv.size() >= 8 && data.sealedPayload.iv.size() <= 200
+        && data.sealedPayload.tag is string && data.sealedPayload.tag.size() >= 8 && data.sealedPayload.tag.size() <= 200
+        && data.sealedPayload.ciphertext is string && data.sealedPayload.ciphertext.size() >= 4 && data.sealedPayload.ciphertext.size() <= 20000
+        && data.createdBy is string && isValidId(data.createdBy)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidBlindIndexEntry(data) {
+      return data.keys().hasAll(['projectId', 'blindIndex', 'subjectPseudoId', 'createdBy', 'createdAt'])
+        && data.keys().hasOnly(['projectId', 'blindIndex', 'subjectPseudoId', 'createdBy', 'createdAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.blindIndex is string && data.blindIndex.size() >= 32 && data.blindIndex.size() <= 128 && isValidId(data.blindIndex)
+        && data.subjectPseudoId is string && data.subjectPseudoId.size() >= 4 && data.subjectPseudoId.size() <= 64 && isValidId(data.subjectPseudoId)
+        && data.createdBy is string && isValidId(data.createdBy) && data.createdBy == request.auth.uid
+        && data.createdAt is timestamp;
+    }
+
+    function isValidConsentRecord(data) {
+      return data.keys().hasAll(['projectId', 'subjectPseudoId', 'protocolVersion', 'documentTitle', 'method', 'status', 'signedAt', 'recordedBy', 'recordedByName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'subjectPseudoId', 'protocolVersion', 'documentTitle', 'method', 'status', 'signedAt', 'withdrawnAt', 'withdrawalReason', 'recordedBy', 'recordedByName', 'createdAt', 'updatedAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.subjectPseudoId is string && data.subjectPseudoId.size() >= 4 && data.subjectPseudoId.size() <= 64 && isValidId(data.subjectPseudoId)
+        && data.protocolVersion is string && data.protocolVersion.size() >= 1 && data.protocolVersion.size() <= 64
+        && data.documentTitle is string && data.documentTitle.size() >= 1 && data.documentTitle.size() <= 200
+        && data.method in ['escrito', 'electronico', 'testigo_imparcial']
+        && data.status in ['vigente', 'retirado', 'pendiente', 'requiere_reconsentimiento']
+        && data.signedAt is string && data.signedAt.size() >= 4 && data.signedAt.size() <= 64
+        && (!('withdrawnAt' in data) || data.withdrawnAt == null || (data.withdrawnAt is string && data.withdrawnAt.size() <= 64))
+        && (!('withdrawalReason' in data) || (data.withdrawalReason is string && data.withdrawalReason.size() <= 500))
+        && data.recordedBy is string && isValidId(data.recordedBy)
+        && data.recordedByName is string && data.recordedByName.size() >= 1 && data.recordedByName.size() <= 120
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidConsentState(data) {
+      return data.keys().hasAll(['projectId', 'subjectPseudoId', 'status', 'consentId', 'updatedBy', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'subjectPseudoId', 'status', 'consentId', 'updatedBy', 'updatedAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.subjectPseudoId is string && data.subjectPseudoId.size() >= 4 && data.subjectPseudoId.size() <= 64 && isValidId(data.subjectPseudoId)
+        && data.status in ['vigente', 'retirado', 'pendiente', 'requiere_reconsentimiento']
+        && data.consentId is string && isValidId(data.consentId)
+        && data.updatedBy is string && isValidId(data.updatedBy) && data.updatedBy == request.auth.uid
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['projectId', 'actorUid', 'actorName', 'actorRole', 'action', 'resourceType', 'resourceId', 'outcome', 'timestampUtc', 'prevHash', 'entryHash'])
+        && data.keys().hasOnly(['projectId', 'actorUid', 'actorName', 'actorRole', 'action', 'resourceType', 'resourceId', 'outcome', 'reason', 'details', 'timestampUtc', 'prevHash', 'entryHash', 'keyId'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.actorUid is string && isValidId(data.actorUid) && data.actorUid == request.auth.uid
+        && data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 120
+        && isValidRoleName(data.actorRole)
+        && data.action is string && data.action.size() >= 1 && data.action.size() <= 64
+        && data.resourceType is string && data.resourceType.size() >= 1 && data.resourceType.size() <= 64
+        && data.resourceId is string && data.resourceId.size() >= 1 && data.resourceId.size() <= 128
+        && data.outcome in ['SUCCESS', 'DENIED', 'ERROR']
+        && (!('reason' in data) || (data.reason is string && data.reason.size() <= 500))
+        && (!('details' in data) || data.details is map)
+        && data.timestampUtc is string && data.timestampUtc.size() >= 10 && data.timestampUtc.size() <= 64
+        && data.prevHash is string && data.prevHash.size() >= 4 && data.prevHash.size() <= 128
+        && data.entryHash is string && data.entryHash.size() >= 32 && data.entryHash.size() <= 128
+        && (!('keyId' in data) || (data.keyId is string && data.keyId.size() >= 1 && data.keyId.size() <= 64));
+    }
+
+    function isValidSavedAnalysis(data) {
+      return data.keys().hasAll(['projectId', 'projectOwnerId', 'datasetId', 'datasetName', 'test', 'title', 'summary', 'params', 'tables', 'charts', 'source', 'isPinned', 'note', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'projectOwnerId', 'datasetId', 'datasetName', 'test', 'title', 'summary', 'params', 'tables', 'charts', 'interpretation', 'source', 'isPinned', 'note', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.projectOwnerId is string && isValidId(data.projectOwnerId)
+        && data.datasetId is string && isValidId(data.datasetId)
+        && data.datasetName is string && data.datasetName.size() >= 1 && data.datasetName.size() <= 160
+        && data.test is string && data.test.size() >= 1 && data.test.size() <= 64
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 240
+        && data.summary is string && data.summary.size() <= 4000
+        && data.params is map
+        && data.tables is list && data.tables.size() <= 20
+        && (data.tables.size() == 0 || data.tables[0] is map)
+        && data.charts is list && data.charts.size() <= 10
+        && (data.charts.size() == 0 || data.charts[0] is map)
+        && (!('interpretation' in data) || data.interpretation == null || (data.interpretation is string && data.interpretation.size() <= 20000))
+        && data.source in ['manual', 'copilot']
+        && data.isPinned is bool
+        && data.note is string && data.note.size() <= 1000
+        && data.createdBy is string && isValidId(data.createdBy)
+        && data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 120
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidChatMessage(data) {
+      return data.keys().hasAll(['projectId', 'datasetId', 'userId', 'role', 'content', 'createdAt'])
+        && data.keys().hasOnly(['projectId', 'datasetId', 'userId', 'role', 'content', 'analysis', 'createdAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.datasetId is string && isValidId(data.datasetId)
+        && data.userId is string && isValidId(data.userId) && data.userId == request.auth.uid
+        && data.role in ['user', 'assistant']
+        && data.content is string && data.content.size() <= 30000
+        && (!('analysis' in data) || data.analysis == null || data.analysis is map)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidClinicalQuery(data) {
+      return data.keys().hasAll(['projectId', 'recordId', 'formId', 'variableName', 'status', 'openedBy', 'openedByName', 'openedAt', 'messages', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'recordId', 'formId', 'subjectPseudoId', 'variableName', 'status', 'openedBy', 'openedByName', 'openedAt', 'resolvedBy', 'resolvedAt', 'messages', 'updatedAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && data.recordId is string && isValidId(data.recordId)
+        && data.formId is string && isValidId(data.formId)
+        && (!('subjectPseudoId' in data) || data.subjectPseudoId == null || (data.subjectPseudoId is string && data.subjectPseudoId.size() <= 64))
+        && data.variableName is string && data.variableName.size() >= 1 && data.variableName.size() <= 120
+        && data.status in ['abierta', 'respondida', 'correccion_solicitada', 'cerrada', 'cancelada']
+        && data.openedBy is string && isValidId(data.openedBy)
+        && data.openedByName is string && data.openedByName.size() >= 1 && data.openedByName.size() <= 120
+        && data.openedAt is string && data.openedAt.size() >= 10 && data.openedAt.size() <= 64
+        && (!('resolvedBy' in data) || data.resolvedBy == null || (data.resolvedBy is string && data.resolvedBy.size() <= 128))
+        && (!('resolvedAt' in data) || data.resolvedAt == null || (data.resolvedAt is string && data.resolvedAt.size() <= 64))
+        && data.messages is list && data.messages.size() >= 1 && data.messages.size() <= 100
+        && data.messages[0] is map
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidProtocolDeviation(data) {
+      return data.keys().hasAll(['projectId', 'title', 'description', 'severity', 'status', 'occurredAt', 'detectedAt', 'impactAssessment', 'capaPlan', 'responsibleName', 'reportedBy', 'reportedByName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'subjectPseudoId', 'recordId', 'title', 'description', 'severity', 'status', 'occurredAt', 'detectedAt', 'impactAssessment', 'capaPlan', 'responsibleName', 'resolutionNotes', 'reportedBy', 'reportedByName', 'createdAt', 'updatedAt'])
+        && data.projectId is string && isValidId(data.projectId)
+        && (!('subjectPseudoId' in data) || data.subjectPseudoId == null || (data.subjectPseudoId is string && data.subjectPseudoId.size() <= 64))
+        && (!('recordId' in data) || data.recordId == null || (data.recordId is string && data.recordId.size() <= 128))
+        && data.title is string && data.title.size() >= 3 && data.title.size() <= 200
+        && data.description is string && data.description.size() >= 5 && data.description.size() <= 2000
+        && data.severity in ['menor', 'mayor', 'critica']
+        && data.status in ['abierta', 'en_investigacion', 'capa_en_curso', 'cerrada']
+        && data.occurredAt is string && data.occurredAt.size() >= 4 && data.occurredAt.size() <= 64
+        && data.detectedAt is string && data.detectedAt.size() >= 4 && data.detectedAt.size() <= 64
+        && data.impactAssessment is string && data.impactAssessment.size() <= 2000
+        && data.capaPlan is string && data.capaPlan.size() <= 2000
+        && data.responsibleName is string && data.responsibleName.size() >= 1 && data.responsibleName.size() <= 120
+        && (!('resolutionNotes' in data) || data.resolutionNotes == null || (data.resolutionNotes is string && data.resolutionNotes.size() <= 2000))
+        && data.reportedBy is string && isValidId(data.reportedBy)
+        && data.reportedByName is string && data.reportedByName.size() >= 1 && data.reportedByName.size() <= 120
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidElectronicSignature(data) {
+      return data.keys().hasAll(['id', 'projectId', 'targetType', 'targetId', 'meaning', 'reason', 'signerUid', 'signerName', 'signerRole', 'authTimeUtc', 'signedAtUtc', 'attestationHash', 'keyId', 'signatureLevel', 'createdAt'])
+        && data.keys().hasOnly(['id', 'projectId', 'targetType', 'targetId', 'targetVersion', 'meaning', 'reason', 'signerUid', 'signerName', 'signerRole', 'authTimeUtc', 'signedAtUtc', 'attestationHash', 'keyId', 'signatureLevel', 'createdAt'])
+        && data.id is string && isValidId(data.id)
+        && data.projectId is string && isValidId(data.projectId)
+        && data.targetType in ['crf_record', 'study_lifecycle']
+        && data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 128
+        && (!('targetVersion' in data) || (data.targetVersion is int && data.targetVersion >= 0))
+        && data.meaning is string && data.meaning.size() >= 3 && data.meaning.size() <= 200
+        && data.reason is string && data.reason.size() >= 5 && data.reason.size() <= 500
+        && data.signerUid is string && isValidId(data.signerUid) && data.signerUid == request.auth.uid
+        && data.signerName is string && data.signerName.size() >= 1 && data.signerName.size() <= 120
+        && isValidRoleName(data.signerRole)
+        && data.authTimeUtc is string && data.authTimeUtc.size() >= 10 && data.authTimeUtc.size() <= 64
+        && data.signedAtUtc is string && data.signedAtUtc.size() >= 10 && data.signedAtUtc.size() <= 64
+        && data.attestationHash is string && data.attestationHash.size() >= 32 && data.attestationHash.size() <= 128
+        && data.keyId is string && data.keyId.size() >= 1 && data.keyId.size() <= 64
+        && data.signatureLevel == 'reauthenticated_hmac_attestation'
+        && data.createdAt is timestamp;
+    }
+
+    // 4. Project Role, MFA Policy & Active Membership Helpers (single-doc get/create/update/delete only)
     function isProjectOwner(projectId) {
-      return isSignedIn()
+      return isVerifiedUser()
         && exists(/databases/$(database)/documents/projects/$(projectId))
         && get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid;
     }
 
-    function isProjectMemberDoc(projectId) {
-      return isSignedIn()
-        && exists(/databases/$(database)/documents/projects/$(projectId)/members/$(request.auth.uid));
+    function isActiveMemberDoc(projectId) {
+      return isVerifiedUser()
+        && exists(/databases/$(database)/documents/projects/$(projectId)/members/$(request.auth.uid))
+        && (!('status' in get(/databases/$(database)/documents/projects/$(projectId)/members/$(request.auth.uid)).data)
+          || get(/databases/$(database)/documents/projects/$(projectId)/members/$(request.auth.uid)).data.status == 'active');
     }
 
-    function isProjectAdmin(projectId) {
+    function memberRole(projectId) {
+      return get(/databases/$(database)/documents/projects/$(projectId)/members/$(request.auth.uid)).data.role;
+    }
+
+    // Strictly only PI / Study Admin (admin_tecnico is read-only audit/oversight and CANNOT alter team, roles, or study governance)
+    function isStudyAdmin(projectId) {
       return isProjectOwner(projectId)
-        || (isProjectMemberDoc(projectId)
-          && get(/databases/$(database)/documents/projects/$(projectId)/members/$(request.auth.uid)).data.role == 'admin');
+        || (isActiveMemberDoc(projectId) && memberRole(projectId) == 'admin');
     }
 
-    // 5. Connectivity test document (signed-in read check)
+    function isClinicalEditor(projectId) {
+      return isProjectOwner(projectId)
+        || (isActiveMemberDoc(projectId) && memberRole(projectId) in ['admin', 'coordinador', 'investigador']);
+    }
+
+    function isClinicalDataReader(projectId) {
+      return isProjectOwner(projectId)
+        || (isActiveMemberDoc(projectId) && memberRole(projectId) in ['admin', 'coordinador', 'investigador', 'monitor_clinico', 'estadistico']);
+    }
+
+    function isClinicalAnalyst(projectId) {
+      return isProjectOwner(projectId)
+        || (isActiveMemberDoc(projectId) && memberRole(projectId) in ['admin', 'coordinador', 'investigador', 'estadistico']);
+    }
+
+    function isClinicalMember(projectId) {
+      return isProjectOwner(projectId)
+        || (isActiveMemberDoc(projectId) && memberRole(projectId) in ['admin', 'coordinador', 'investigador', 'monitor_clinico', 'capturador']);
+    }
+
+    function isCrfCapturer(projectId) {
+      return isProjectOwner(projectId)
+        || (isActiveMemberDoc(projectId) && memberRole(projectId) in ['admin', 'coordinador', 'investigador', 'capturador']);
+    }
+
+    function isCrfVerifier(projectId) {
+      return isProjectOwner(projectId)
+        || (isActiveMemberDoc(projectId) && memberRole(projectId) in ['admin', 'coordinador', 'monitor_clinico']);
+    }
+
+    function isCrfReopener(projectId) {
+      return isProjectOwner(projectId)
+        || (isActiveMemberDoc(projectId) && memberRole(projectId) in ['admin', 'coordinador']);
+    }
+
+    function isVaultReader(projectId) {
+      return isProjectOwner(projectId)
+        || (isActiveMemberDoc(projectId) && memberRole(projectId) in ['admin', 'coordinador']);
+    }
+
+    function isVaultRegistrar(projectId) {
+      return isProjectOwner(projectId)
+        || (isActiveMemberDoc(projectId) && memberRole(projectId) in ['admin', 'coordinador', 'investigador', 'capturador']);
+    }
+
+    function isConsentReader(projectId) {
+      return isProjectOwner(projectId)
+        || (isActiveMemberDoc(projectId) && memberRole(projectId) in ['admin', 'coordinador', 'investigador', 'monitor_clinico', 'capturador']);
+    }
+
+    function isConsentWriter(projectId) {
+      return isProjectOwner(projectId)
+        || (isActiveMemberDoc(projectId) && memberRole(projectId) in ['admin', 'coordinador', 'investigador', 'capturador']);
+    }
+
+    function isAuditReader(projectId) {
+      return isProjectOwner(projectId)
+        || (isActiveMemberDoc(projectId) && memberRole(projectId) in ['admin', 'coordinador', 'monitor_clinico', 'admin_tecnico']);
+    }
+
+    function isProjectMember(projectId) {
+      return isProjectOwner(projectId) || isActiveMemberDoc(projectId);
+    }
+
+    function satisfiesStudyMfa(projectId) {
+      return !exists(/databases/$(database)/documents/projects/$(projectId)/governance/settings)
+        || get(/databases/$(database)/documents/projects/$(projectId)/governance/settings).data.requireMfa != true
+        || hasMfaClaim();
+    }
+
+    function isConsentGateActive(projectId) {
+      return exists(/databases/$(database)/documents/projects/$(projectId)/governance/settings)
+        && get(/databases/$(database)/documents/projects/$(projectId)/governance/settings).data.requireActiveConsent == true;
+    }
+
+    function isConsentCompliantForCrf(projectId, recData) {
+      return ('subjectPseudoId' in recData && recData.subjectPseudoId is string && recData.subjectPseudoId.size() >= 4)
+        ? (
+            exists(/databases/$(database)/documents/projects/$(projectId)/consentStates/$(recData.subjectPseudoId))
+              ? get(/databases/$(database)/documents/projects/$(projectId)/consentStates/$(recData.subjectPseudoId)).data.status == 'vigente'
+              : !isConsentGateActive(projectId)
+          )
+        : !isConsentGateActive(projectId);
+    }
+
+    function isStudyOpenForCapture(projectId) {
+      return !exists(/databases/$(database)/documents/projects/$(projectId)/governance/lifecycle)
+        || get(/databases/$(database)/documents/projects/$(projectId)/governance/lifecycle).data.studyStatus in ['borrador', 'reclutamiento', 'seguimiento'];
+    }
+
+    function isStudyUnlockedForCrfReview(projectId) {
+      return !exists(/databases/$(database)/documents/projects/$(projectId)/governance/lifecycle)
+        || get(/databases/$(database)/documents/projects/$(projectId)/governance/lifecycle).data.studyStatus in ['borrador', 'reclutamiento', 'seguimiento', 'cerrado'];
+    }
+
+    // 5. Connectivity test document
     match /test/connection {
       allow get: if isSignedIn();
     }
@@ -107,11 +594,85 @@ service cloud.firestore {
         && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'updatedAt']);
     }
 
-    // 7. Clinical Projects & Per-Project Memberships
+    // 7. Per-User Private Project Index
+    match /userProjects/{userId}/items/{projectId} {
+      allow get: if isValidId(userId) && isValidId(projectId) && isOwner(userId);
+      allow list: if isValidId(userId) && isOwner(userId);
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidId(projectId)
+        && isOwner(userId)
+        && isValidUserProjectRef(incoming())
+        && incoming().projectId == projectId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isProjectMember(projectId);
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidId(projectId)
+        && isOwner(userId)
+        && isValidUserProjectRef(incoming())
+        && incoming().projectId == existing().projectId
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'role', 'updatedAt'])
+        && isProjectMember(projectId);
+      allow delete: if isVerifiedUser() && isValidId(userId) && isValidId(projectId) && isOwner(userId);
+    }
+
+    // 8. Email Invitations (Pending, Expiring & Single-Use; Study Admin only)
+    match /projectInvites/{inviteId} {
+      allow get: if isVerifiedUser()
+        && isValidId(inviteId)
+        && (existing().email == request.auth.token.email
+          || existing().projectOwnerId == request.auth.uid
+          || (isStudyAdmin(existing().projectId) && satisfiesStudyMfa(existing().projectId)));
+      allow list: if isVerifiedUser()
+        && (existing().email == request.auth.token.email || existing().projectOwnerId == request.auth.uid);
+      allow create: if isVerifiedUser()
+        && isValidId(inviteId)
+        && isValidProjectInvite(incoming())
+        && incoming().invitedByUid == request.auth.uid
+        && incoming().status == 'pending'
+        && 'expiresAt' in incoming()
+        && incoming().expiresAt is timestamp
+        && incoming().expiresAt > request.time
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isStudyAdmin(incoming().projectId)
+        && satisfiesStudyMfa(incoming().projectId);
+      allow update: if isVerifiedUser()
+        && isValidId(inviteId)
+        && isValidProjectInvite(incoming())
+        && incoming().projectId == existing().projectId
+        && incoming().projectOwnerId == existing().projectOwnerId
+        && incoming().invitedByUid == existing().invitedByUid
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (existing().status == 'pending'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'name', 'projectName', 'expiresAt', 'updatedAt'])
+            && isStudyAdmin(existing().projectId)
+            && satisfiesStudyMfa(existing().projectId))
+          || (existing().email == request.auth.token.email
+            && existing().status == 'pending'
+            && isInviteUnexpired(existing())
+            && incoming().status == 'accepted'
+            && incoming().acceptedUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'acceptedUid', 'updatedAt']))
+        );
+      allow delete: if isVerifiedUser()
+        && isValidId(inviteId)
+        && isStudyAdmin(existing().projectId)
+        && satisfiesStudyMfa(existing().projectId);
+    }
+
+    // 9. Clinical Projects & Subcollections
     match /projects/{projectId} {
-      allow get: if isValidId(projectId) && isSignedIn()
-        && (existing().ownerId == request.auth.uid || isProjectMemberDoc(projectId));
-      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+      allow get: if isValidId(projectId) && isProjectMember(projectId);
+      allow list: if isVerifiedUser() && existing().ownerId == request.auth.uid;
       allow create: if isVerifiedUser()
         && isValidId(projectId)
         && isValidClinicalProject(incoming())
@@ -121,52 +682,737 @@ service cloud.firestore {
       allow update: if isVerifiedUser()
         && isValidId(projectId)
         && isValidClinicalProject(incoming())
-        && isProjectAdmin(projectId)
         && incoming().ownerId == existing().ownerId
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'updatedAt'])
+        && isStudyAdmin(projectId)
+        && satisfiesStudyMfa(projectId);
       allow delete: if isVerifiedUser()
         && isValidId(projectId)
-        && existing().ownerId == request.auth.uid;
+        && existing().ownerId == request.auth.uid
+        && satisfiesStudyMfa(projectId);
 
+      // Study Governance Settings & Lifecycle (settings: Study Admin; lifecycle: IP/Coordinator)
+      match /governance/{docId} {
+        allow get: if isValidId(projectId) && docId in ['settings', 'lifecycle'] && isProjectMember(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && (
+            (docId == 'settings'
+              && isValidStudyGovernance(incoming())
+              && incoming().projectId == projectId
+              && incoming().updatedBy == request.auth.uid
+              && incoming().updatedAt == request.time
+              && isStudyAdmin(projectId)
+              && satisfiesStudyMfa(projectId))
+            || (docId == 'lifecycle'
+              && isValidStudyLifecycle(incoming())
+              && incoming().projectId == projectId
+              && incoming().updatedBy == request.auth.uid
+              && incoming().updatedAt == request.time
+              && isCrfReopener(projectId)
+              && satisfiesStudyMfa(projectId))
+          );
+        allow update: if isVerifiedUser()
+          && isValidId(projectId)
+          && (
+            (docId == 'settings'
+              && isValidStudyGovernance(incoming())
+              && incoming().projectId == existing().projectId
+              && incoming().updatedBy == request.auth.uid
+              && incoming().updatedAt == request.time
+              && isStudyAdmin(projectId)
+              && satisfiesStudyMfa(projectId))
+            || (docId == 'lifecycle'
+              && isValidStudyLifecycle(incoming())
+              && incoming().projectId == existing().projectId
+              && incoming().updatedBy == request.auth.uid
+              && incoming().updatedAt == request.time
+              && isCrfReopener(projectId)
+              && satisfiesStudyMfa(projectId))
+          );
+      }
+
+      // Project Meta Index & Sharded Sub-Blocks
+      match /meta/{metaId} {
+        allow get: if isValidId(projectId) && isValidId(metaId) && isProjectMember(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && (
+            (metaId == 'index'
+              && isValidProjectMetaIndex(incoming())
+              && incoming().projectId == projectId
+              && incoming().updatedAt == request.time
+              && isProjectOwner(projectId))
+            || (isValidMetaShardId(metaId)
+              && isValidMetaShard(incoming())
+              && incoming().projectId == projectId
+              && incoming().updatedAt == request.time
+              && incoming().ids.size() <= 1
+              && satisfiesStudyMfa(projectId)
+              && ((incoming().kind == 'auditLogIds' && isProjectMember(projectId))
+                || (incoming().kind in ['crfRecordIds', 'crfVersionIds'] && (isCrfCapturer(projectId) || isCrfVerifier(projectId) || isClinicalEditor(projectId)))
+                || (incoming().kind == 'vaultIds' && isVaultRegistrar(projectId))
+                || (incoming().kind == 'consentIds' && isConsentWriter(projectId))
+                || (incoming().kind in ['queryIds', 'signatureIds'] && isClinicalMember(projectId))
+                || (incoming().kind == 'deviationIds' && (isClinicalEditor(projectId) || isCrfVerifier(projectId)))))
+          );
+        allow update: if isVerifiedUser()
+          && isValidId(projectId)
+          && (
+            (metaId == 'index'
+              && isValidProjectMetaIndex(incoming())
+              && incoming().projectId == existing().projectId
+              && incoming().updatedAt == request.time
+              && satisfiesStudyMfa(projectId)
+              && (
+                (isClinicalEditor(projectId)
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['memberIds', 'datasetIds', 'formIds', 'crfRecordIds', 'crfVersionIds', 'vaultIds', 'consentIds', 'auditLogIds', 'lastAuditHash', 'analysisIds', 'shardCounts', 'updatedAt']))
+                || (isStudyAdmin(projectId)
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['memberIds', 'inviteIds', 'auditLogIds', 'lastAuditHash', 'shardCounts', 'updatedAt']))
+                || (isClinicalAnalyst(projectId)
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['analysisIds', 'auditLogIds', 'lastAuditHash', 'shardCounts', 'updatedAt']))
+                || (isCrfCapturer(projectId)
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['crfRecordIds', 'crfVersionIds', 'auditLogIds', 'lastAuditHash', 'shardCounts', 'updatedAt']))
+                || (isCrfVerifier(projectId)
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['crfVersionIds', 'auditLogIds', 'lastAuditHash', 'shardCounts', 'updatedAt']))
+                || (isVaultRegistrar(projectId)
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['vaultIds', 'auditLogIds', 'lastAuditHash', 'shardCounts', 'updatedAt']))
+                || (isConsentWriter(projectId)
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['consentIds', 'auditLogIds', 'lastAuditHash', 'shardCounts', 'updatedAt']))
+                || (isProjectMember(projectId)
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['auditLogIds', 'lastAuditHash', 'shardCounts', 'updatedAt'])
+                  && (!('auditLogIds' in incoming().diff(existing()).affectedKeys())
+                    || (!('auditLogIds' in existing()) && incoming().auditLogIds.size() <= 1)
+                    || (incoming().auditLogIds.hasAll(existing().auditLogIds) && incoming().auditLogIds.size() <= existing().auditLogIds.size() + 1)))
+                || (isProjectMember(projectId)
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['memberIds', 'updatedAt'])
+                  && incoming().memberIds.hasAll(existing().memberIds)
+                  && incoming().memberIds.size() <= existing().memberIds.size() + 1
+                  && request.auth.uid in incoming().memberIds)
+              ))
+            || (isValidMetaShardId(metaId)
+              && isValidMetaShard(incoming())
+              && incoming().projectId == existing().projectId
+              && incoming().kind == existing().kind
+              && incoming().shardIndex == existing().shardIndex
+              && incoming().updatedAt == request.time
+              && incoming().diff(existing()).affectedKeys().hasOnly(['ids', 'updatedAt'])
+              && satisfiesStudyMfa(projectId)
+              && (
+                (incoming().ids.hasAll(existing().ids)
+                  && incoming().ids.size() <= existing().ids.size() + 1
+                  && ((existing().kind == 'auditLogIds' && isProjectMember(projectId))
+                    || (existing().kind in ['crfRecordIds', 'crfVersionIds'] && (isCrfCapturer(projectId) || isCrfVerifier(projectId) || isClinicalEditor(projectId)))
+                    || (existing().kind == 'vaultIds' && isVaultRegistrar(projectId))
+                    || (existing().kind == 'consentIds' && isConsentWriter(projectId))
+                    || (existing().kind in ['queryIds', 'signatureIds'] && isClinicalMember(projectId))
+                    || (existing().kind == 'deviationIds' && (isClinicalEditor(projectId) || isCrfVerifier(projectId)))))
+                || (existing().kind == 'crfRecordIds' && isClinicalEditor(projectId))
+              ))
+          );
+        allow delete: if isVerifiedUser()
+          && isValidId(projectId)
+          && (metaId == 'index' || isValidMetaShardId(metaId))
+          && isProjectOwner(projectId)
+          && satisfiesStudyMfa(projectId);
+      }
+
+      // Private per-member index for own CRF records & chat messages
+      match /memberIndexes/{userId} {
+        allow get: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(userId)
+          && isOwner(userId)
+          && (isClinicalMember(projectId) || isClinicalAnalyst(projectId))
+          && satisfiesStudyMfa(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(userId)
+          && isOwner(userId)
+          && isValidMemberIndex(incoming())
+          && incoming().projectId == projectId
+          && incoming().userId == userId
+          && incoming().updatedAt == request.time
+          && (isClinicalMember(projectId) || isClinicalAnalyst(projectId))
+          && satisfiesStudyMfa(projectId);
+        allow update: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(userId)
+          && isOwner(userId)
+          && isValidMemberIndex(incoming())
+          && incoming().projectId == existing().projectId
+          && incoming().userId == existing().userId
+          && incoming().updatedAt == request.time
+          && (isClinicalMember(projectId) || isClinicalAnalyst(projectId))
+          && satisfiesStudyMfa(projectId);
+        allow delete: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(userId)
+          && isStudyAdmin(projectId)
+          && satisfiesStudyMfa(projectId);
+      }
+
+      // Members subcollection (Study Admin manages team; admin_tecnico cannot)
       match /members/{memberId} {
-        allow get: if isValidId(projectId) && isValidId(memberId) && isSignedIn()
-          && (isProjectOwner(projectId) || isProjectMemberDoc(projectId) || request.auth.uid == memberId);
-        allow list: if isValidId(projectId) && isSignedIn()
-          && existing().projectId == projectId
-          && existing().userId == request.auth.uid;
+        allow get: if isVerifiedUser() && isValidId(projectId) && isValidId(memberId) && (isProjectMember(projectId) || request.auth.uid == memberId);
+        allow list: if false;
         allow create: if isVerifiedUser()
           && isValidId(projectId)
           && isValidId(memberId)
           && isValidProjectMember(incoming())
           && incoming().projectId == projectId
-          && exists(/databases/$(database)/documents/projects/$(projectId))
           && incoming().createdAt == request.time
           && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/projects/$(projectId))
+          && incoming().projectOwnerId == get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId
           && (
-            isProjectAdmin(projectId)
+            (isStudyAdmin(projectId) && satisfiesStudyMfa(projectId))
             || (
               get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid
               && memberId == request.auth.uid
               && incoming().userId == request.auth.uid
               && incoming().role == 'admin'
             )
+            || (
+              'inviteId' in incoming()
+              && incoming().inviteId is string
+              && isValidId(incoming().inviteId)
+              && exists(/databases/$(database)/documents/projectInvites/$(incoming().inviteId))
+              && get(/databases/$(database)/documents/projectInvites/$(incoming().inviteId)).data.status == 'pending'
+              && isInviteUnexpired(get(/databases/$(database)/documents/projectInvites/$(incoming().inviteId)).data)
+              && get(/databases/$(database)/documents/projectInvites/$(incoming().inviteId)).data.projectId == projectId
+              && get(/databases/$(database)/documents/projectInvites/$(incoming().inviteId)).data.email == request.auth.token.email
+              && get(/databases/$(database)/documents/projectInvites/$(incoming().inviteId)).data.role == incoming().role
+              && memberId == request.auth.uid
+              && incoming().userId == request.auth.uid
+            )
           );
         allow update: if isVerifiedUser()
           && isValidId(projectId)
           && isValidId(memberId)
           && isValidProjectMember(incoming())
-          && isProjectAdmin(projectId)
           && incoming().projectId == existing().projectId
+          && incoming().projectOwnerId == existing().projectOwnerId
+          && incoming().userId == existing().userId
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
-          && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'name', 'userId', 'updatedAt']);
+          && (memberId != existing().projectOwnerId || incoming().role == 'admin')
+          && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'status', 'name', 'updatedAt'])
+          && isStudyAdmin(projectId)
+          && satisfiesStudyMfa(projectId);
         allow delete: if isVerifiedUser()
           && isValidId(projectId)
           && isValidId(memberId)
-          && isProjectAdmin(projectId)
-          && memberId != get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId;
+          && memberId != existing().projectOwnerId
+          && isStudyAdmin(projectId)
+          && satisfiesStudyMfa(projectId);
+      }
+
+      // Datasets (clinical data readers can read; clinical editors write; admin_tecnico & capturador excluded)
+      match /datasets/{datasetId} {
+        allow get: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(datasetId)
+          && isClinicalDataReader(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(datasetId)
+          && isValidClinicalDataset(incoming())
+          && incoming().projectId == projectId
+          && incoming().createdBy == request.auth.uid
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && isClinicalEditor(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow update: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(datasetId)
+          && isValidClinicalDataset(incoming())
+          && incoming().projectId == existing().projectId
+          && incoming().projectOwnerId == existing().projectOwnerId
+          && incoming().createdBy == existing().createdBy
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'formId', 'variables', 'nRows', 'chunkCount', 'updatedAt'])
+          && isClinicalEditor(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow delete: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(datasetId)
+          && isClinicalEditor(projectId)
+          && satisfiesStudyMfa(projectId);
+      }
+
+      // Chunked rows (clinical data readers read; clinical editors write; admin_tecnico excluded)
+      match /datasetChunks/{chunkId} {
+        allow get: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(chunkId)
+          && isClinicalDataReader(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(chunkId)
+          && isValidDatasetChunk(incoming())
+          && incoming().projectId == projectId
+          && incoming().updatedBy == request.auth.uid
+          && incoming().updatedAt == request.time
+          && isClinicalEditor(projectId)
+          && satisfiesStudyMfa(projectId)
+          && exists(/databases/$(database)/documents/projects/$(projectId)/datasets/$(incoming().datasetId));
+        allow update: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(chunkId)
+          && isValidDatasetChunk(incoming())
+          && incoming().projectId == existing().projectId
+          && incoming().datasetId == existing().datasetId
+          && incoming().chunkIndex == existing().chunkIndex
+          && incoming().updatedBy == request.auth.uid
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['rows', 'updatedBy', 'updatedAt'])
+          && isStudyOpenForCapture(projectId)
+          && isClinicalEditor(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow delete: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(chunkId)
+          && isClinicalEditor(projectId)
+          && satisfiesStudyMfa(projectId);
+      }
+
+      // Clinical Forms (CRF; clinical members read; clinical editors write; admin_tecnico & estadistico excluded)
+      match /forms/{formId} {
+        allow get: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(formId)
+          && isClinicalMember(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(formId)
+          && isValidClinicalForm(incoming())
+          && incoming().projectId == projectId
+          && incoming().createdBy == request.auth.uid
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && isClinicalEditor(projectId)
+          && satisfiesStudyMfa(projectId)
+          && exists(/databases/$(database)/documents/projects/$(projectId)/datasets/$(incoming().datasetId));
+        allow update: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(formId)
+          && isValidClinicalForm(incoming())
+          && incoming().projectId == existing().projectId
+          && incoming().projectOwnerId == existing().projectOwnerId
+          && incoming().datasetId == existing().datasetId
+          && incoming().createdBy == existing().createdBy
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (!('formVersion' in existing()) || ('formVersion' in incoming() && incoming().formVersion >= existing().formVersion))
+          && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'fields', 'formVersion', 'updatedAt'])
+          && isClinicalEditor(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow delete: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(formId)
+          && isClinicalEditor(projectId)
+          && satisfiesStudyMfa(projectId);
+      }
+
+      // CRF Patient Records (Pseudonymized, state-locked, version-controlled, consent-gated)
+      match /crfRecords/{recordId} {
+        allow get: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(recordId)
+          && (isClinicalDataReader(projectId) || (isCrfCapturer(projectId) && existing().createdBy == request.auth.uid))
+          && satisfiesStudyMfa(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(recordId)
+          && isValidCrfRecord(incoming())
+          && incoming().projectId == projectId
+          && incoming().createdBy == request.auth.uid
+          && incoming().updatedBy == request.auth.uid
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && (!('status' in incoming()) || incoming().status in ['borrador', 'completado', 'enviado'])
+          && isStudyOpenForCapture(projectId)
+          && isCrfCapturer(projectId)
+          && satisfiesStudyMfa(projectId)
+          && isConsentCompliantForCrf(projectId, incoming())
+          && exists(/databases/$(database)/documents/projects/$(projectId)/forms/$(incoming().formId))
+          && get(/databases/$(database)/documents/projects/$(projectId)/forms/$(incoming().formId)).data.projectId == projectId
+          && get(/databases/$(database)/documents/projects/$(projectId)/forms/$(incoming().formId)).data.datasetId == incoming().datasetId
+          && exists(/databases/$(database)/documents/projects/$(projectId)/datasets/$(incoming().datasetId));
+        allow update: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(recordId)
+          && isValidCrfRecord(incoming())
+          && incoming().projectId == existing().projectId
+          && incoming().projectOwnerId == existing().projectOwnerId
+          && incoming().formId == existing().formId
+          && incoming().datasetId == existing().datasetId
+          && incoming().createdBy == existing().createdBy
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedBy == request.auth.uid
+          && incoming().updatedAt == request.time
+          && (!('version' in existing()) || ('version' in incoming() && incoming().version == existing().version + 1))
+          && satisfiesStudyMfa(projectId)
+          && (
+            (isUnlockedCrf(existing())
+              && isStudyOpenForCapture(projectId)
+              && (isClinicalEditor(projectId) || (isCrfCapturer(projectId) && existing().createdBy == request.auth.uid))
+              && (!('status' in incoming()) || incoming().status in ['borrador', 'completado', 'enviado'])
+              && (!('subjectPseudoId' in existing()) || existing().subjectPseudoId == null || incoming().subjectPseudoId == existing().subjectPseudoId)
+              && isConsentCompliantForCrf(projectId, incoming())
+              && incoming().diff(existing()).affectedKeys().hasOnly(['data', 'status', 'version', 'formVersion', 'lastChangeReason', 'subjectPseudoId', 'updatedBy', 'updatedAt']))
+            || (isCrfVerifier(projectId)
+              && isStudyUnlockedForCrfReview(projectId)
+              && isUnlockedCrf(existing())
+              && 'status' in incoming()
+              && incoming().status in ['verificado', 'bloqueado']
+              && incoming().data == existing().data
+              && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'version', 'lastChangeReason', 'lastSignatureId', 'updatedBy', 'updatedAt']))
+            || (isCrfReopener(projectId)
+              && isStudyUnlockedForCrfReview(projectId)
+              && !isUnlockedCrf(existing())
+              && 'status' in incoming()
+              && incoming().status == 'borrador'
+              && 'lastChangeReason' in incoming()
+              && incoming().lastChangeReason.size() >= 5
+              && incoming().data == existing().data
+              && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'version', 'lastChangeReason', 'lastSignatureId', 'updatedBy', 'updatedAt']))
+          );
+        allow delete: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(recordId)
+          && isStudyOpenForCapture(projectId)
+          && isUnlockedCrf(existing())
+          && isClinicalEditor(projectId)
+          && satisfiesStudyMfa(projectId);
+      }
+
+      // Immutable CRF Version History (append-only)
+      match /crfVersions/{versionId} {
+        allow get: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(versionId)
+          && (isClinicalDataReader(projectId) || (isCrfCapturer(projectId) && existing().changedBy == request.auth.uid))
+          && satisfiesStudyMfa(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(versionId)
+          && isValidCrfVersion(incoming())
+          && incoming().projectId == projectId
+          && incoming().changedAt == request.time
+          && isClinicalMember(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow update, delete: if false;
+      }
+
+      // Isolated Identity Vault (only PI & Coordinator can read correspondence; atomic with blindIndexes)
+      match /identityVault/{subjectPseudoId} {
+        allow get: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(subjectPseudoId)
+          && isVaultReader(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(subjectPseudoId)
+          && isValidIdentityVaultDoc(incoming())
+          && incoming().projectId == projectId
+          && incoming().subjectPseudoId == subjectPseudoId
+          && incoming().createdBy == request.auth.uid
+          && incoming().createdAt == request.time
+          && isVaultRegistrar(projectId)
+          && satisfiesStudyMfa(projectId)
+          && existsAfter(/databases/$(database)/documents/projects/$(projectId)/blindIndexes/$(incoming().blindIndex));
+        allow update: if false;
+        allow delete: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(subjectPseudoId)
+          && isProjectOwner(projectId)
+          && satisfiesStudyMfa(projectId);
+      }
+
+      // HMAC Blind Index Catalog (zero PII; O(1) duplicate prevention for capturers without vault read)
+      match /blindIndexes/{blindHash} {
+        allow get: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(blindHash)
+          && isVaultRegistrar(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(blindHash)
+          && isValidBlindIndexEntry(incoming())
+          && incoming().projectId == projectId
+          && incoming().blindIndex == blindHash
+          && incoming().createdAt == request.time
+          && isVaultRegistrar(projectId)
+          && satisfiesStudyMfa(projectId)
+          && existsAfter(/databases/$(database)/documents/projects/$(projectId)/identityVault/$(incoming().subjectPseudoId));
+        allow update: if false;
+        allow delete: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(blindHash)
+          && isProjectOwner(projectId)
+          && satisfiesStudyMfa(projectId);
+      }
+
+      // Informed Consent Records (linked to subjectPseudoId; atomic sync with consentStates)
+      match /consentRecords/{consentId} {
+        allow get: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(consentId)
+          && isConsentReader(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(consentId)
+          && isValidConsentRecord(incoming())
+          && incoming().projectId == projectId
+          && incoming().recordedBy == request.auth.uid
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && isConsentWriter(projectId)
+          && satisfiesStudyMfa(projectId)
+          && existsAfter(/databases/$(database)/documents/projects/$(projectId)/consentStates/$(incoming().subjectPseudoId));
+        allow update: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(consentId)
+          && isValidConsentRecord(incoming())
+          && incoming().projectId == existing().projectId
+          && incoming().subjectPseudoId == existing().subjectPseudoId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'withdrawnAt', 'withdrawalReason', 'protocolVersion', 'documentTitle', 'updatedAt'])
+          && isConsentWriter(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow delete: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(consentId)
+          && isProjectOwner(projectId)
+          && satisfiesStudyMfa(projectId);
+      }
+
+      // Per-Participant Active Consent State (enforces consent gate in crfRecords rules)
+      match /consentStates/{subjectPseudoId} {
+        allow get: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(subjectPseudoId)
+          && isConsentReader(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(subjectPseudoId)
+          && isValidConsentState(incoming())
+          && incoming().projectId == projectId
+          && incoming().subjectPseudoId == subjectPseudoId
+          && incoming().updatedAt == request.time
+          && isConsentWriter(projectId)
+          && satisfiesStudyMfa(projectId)
+          && existsAfter(/databases/$(database)/documents/projects/$(projectId)/consentRecords/$(incoming().consentId));
+        allow update: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(subjectPseudoId)
+          && isValidConsentState(incoming())
+          && incoming().projectId == existing().projectId
+          && incoming().subjectPseudoId == existing().subjectPseudoId
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'consentId', 'updatedBy', 'updatedAt'])
+          && isConsentWriter(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow delete: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(subjectPseudoId)
+          && isProjectOwner(projectId)
+          && satisfiesStudyMfa(projectId);
+      }
+
+      // Immutable HMAC-Chained Audit Logs (append-only; zero update or delete)
+      match /auditLogs/{auditId} {
+        allow get: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(auditId)
+          && isAuditReader(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(auditId)
+          && isValidAuditLog(incoming())
+          && incoming().projectId == projectId
+          && isProjectMember(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow update, delete: if false;
+      }
+
+      // Saved Statistical Analyses & Charts
+      match /savedAnalyses/{analysisId} {
+        allow get: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(analysisId)
+          && isClinicalDataReader(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(analysisId)
+          && isValidSavedAnalysis(incoming())
+          && incoming().projectId == projectId
+          && incoming().createdBy == request.auth.uid
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && isClinicalAnalyst(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow update: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(analysisId)
+          && isValidSavedAnalysis(incoming())
+          && incoming().projectId == existing().projectId
+          && incoming().projectOwnerId == existing().projectOwnerId
+          && incoming().datasetId == existing().datasetId
+          && incoming().createdBy == existing().createdBy
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'isPinned', 'note', 'updatedAt'])
+          && isClinicalAnalyst(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow delete: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(analysisId)
+          && isClinicalEditor(projectId)
+          && satisfiesStudyMfa(projectId);
+      }
+
+      // AI Copilot Chat History (No list allowed; analysts only via memberIndexes)
+      match /chatMessages/{messageId} {
+        allow get: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(messageId)
+          && existing().userId == request.auth.uid
+          && isClinicalAnalyst(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(messageId)
+          && isValidChatMessage(incoming())
+          && incoming().projectId == projectId
+          && incoming().createdAt == request.time
+          && isClinicalAnalyst(projectId)
+          && satisfiesStudyMfa(projectId)
+          && exists(/databases/$(database)/documents/projects/$(projectId)/datasets/$(incoming().datasetId));
+        allow delete: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(messageId)
+          && existing().userId == request.auth.uid
+          && isClinicalAnalyst(projectId)
+          && satisfiesStudyMfa(projectId);
+      }
+
+      // Clinical Monitoring Queries (CRF discrepancies; monitor cannot alter clinical data)
+      match /queries/{queryId} {
+        allow get: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(queryId)
+          && isClinicalMember(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(queryId)
+          && isValidClinicalQuery(incoming())
+          && incoming().projectId == projectId
+          && incoming().openedBy == request.auth.uid
+          && incoming().status == 'abierta'
+          && incoming().updatedAt == request.time
+          && isCrfVerifier(projectId)
+          && satisfiesStudyMfa(projectId)
+          && exists(/databases/$(database)/documents/projects/$(projectId)/crfRecords/$(incoming().recordId));
+        allow update: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(queryId)
+          && isValidClinicalQuery(incoming())
+          && incoming().projectId == existing().projectId
+          && incoming().recordId == existing().recordId
+          && incoming().formId == existing().formId
+          && incoming().variableName == existing().variableName
+          && incoming().openedBy == existing().openedBy
+          && incoming().openedAt == existing().openedAt
+          && incoming().updatedAt == request.time
+          && isClinicalMember(projectId)
+          && satisfiesStudyMfa(projectId)
+          && (incoming().status == 'respondida' || isCrfVerifier(projectId));
+        allow delete: if false;
+      }
+
+      // Protocol Deviations & CAPA Tracking (audit-preserved)
+      match /deviations/{deviationId} {
+        allow get: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(deviationId)
+          && isClinicalMember(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(deviationId)
+          && isValidProtocolDeviation(incoming())
+          && incoming().projectId == projectId
+          && incoming().reportedBy == request.auth.uid
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && (isClinicalEditor(projectId) || isCrfVerifier(projectId))
+          && satisfiesStudyMfa(projectId);
+        allow update: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(deviationId)
+          && isValidProtocolDeviation(incoming())
+          && incoming().projectId == existing().projectId
+          && incoming().reportedBy == existing().reportedBy
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (isClinicalEditor(projectId) || isCrfVerifier(projectId))
+          && satisfiesStudyMfa(projectId);
+        allow delete: if false;
+      }
+
+      // Immutable Re-authenticated Electronic Approval Manifests (append-only)
+      match /electronicSignatures/{sigId} {
+        allow get: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(sigId)
+          && (isClinicalMember(projectId) || isAuditReader(projectId))
+          && satisfiesStudyMfa(projectId);
+        allow list: if false;
+        allow create: if isVerifiedUser()
+          && isValidId(projectId)
+          && isValidId(sigId)
+          && isValidElectronicSignature(incoming())
+          && incoming().projectId == projectId
+          && incoming().id == sigId
+          && incoming().createdAt == request.time
+          && isClinicalMember(projectId)
+          && satisfiesStudyMfa(projectId);
+        allow update, delete: if false;
       }
     }
   }

@@ -7,9 +7,10 @@ import {
   type FunctionDeclaration,
   type Part,
 } from "@google/genai";
-import type { AnalysisResult, ChatMessage, Dataset, TestName, Variable } from "../src/lib/types.ts";
+import type { AnalysisResult, Cell, ChatMessage, Dataset, TestName, Variable } from "../src/lib/types.ts";
+import { redactSensitiveText } from "./logger.ts";
+import { isLikelyIdentifierVariable, scanDatasetMetadataForPii, scanForPii } from "./piiGuard.ts";
 import { runStatTest, StatsError, TEST_DOCS } from "./statsEngine.ts";
-import { getDatasetRows } from "./store.ts";
 
 const PRIMARY_MODEL = "gemini-4-hydrogen";
 const FALLBACK_MODEL = "gemini-3.1-flash-lite";
@@ -172,10 +173,16 @@ async function runWithFallback<T>(
   throw lastErr;
 }
 
+function safeVariableForPrompt(v: Variable): boolean {
+  return !isLikelyIdentifierVariable(v.name, v.label);
+}
+
 function buildSchemaDescription(ds: Dataset): string {
   return ds.variables
+    .filter(safeVariableForPrompt)
     .map((v) => {
-      const levels = v.levels?.length ? ` niveles=${JSON.stringify(v.levels.slice(0, 12))}` : "";
+      const allowLevels = (v.type === "categorical" || v.type === "binary") && !isLikelyIdentifierVariable(v.name, v.label);
+      const levels = allowLevels && v.levels?.length ? ` niveles=${JSON.stringify(v.levels.slice(0, 12))}` : "";
       const label = v.label ? ` «${v.label}»` : "";
       return `- ${v.name} (${v.type})${label}${levels}`;
     })
@@ -329,10 +336,31 @@ export interface StreamCallbacks {
 
 export async function runGeminiCopilot(
   dataset: Dataset,
+  rows: Record<string, Cell>[],
   pastMessages: ChatMessage[],
   userMessage: string,
   cb: StreamCallbacks
 ): Promise<{ content: string; analysis: AnalysisResult | null }> {
+  const userScan = scanForPii(userMessage);
+  if (userScan.hasPii) {
+    const blockedMsg = `Consulta bloqueada por protección de datos (RGPD): se detectaron posibles identificadores personales (${userScan.labels.join(", ")}). Elimina cualquier dato identificativo antes de consultar al Asistente IA externo.`;
+    cb.onError(blockedMsg);
+    return {
+      content: blockedMsg,
+      analysis: null,
+    };
+  }
+
+  const metaScan = scanDatasetMetadataForPii(dataset);
+  if (metaScan.hasPii) {
+    const blockedMsg = `Consulta bloqueada por protección de datos (RGPD): se detectaron posibles identificadores personales en los metadatos del estudio o variables (${metaScan.labels.join(", ")}). Desidentifica nombres de estudio, etiquetas o niveles categóricos antes de usar el Asistente IA externo.`;
+    cb.onError(blockedMsg);
+    return {
+      content: blockedMsg,
+      analysis: null,
+    };
+  }
+
   let ai: GoogleGenAI;
   try {
     ai = getAiClient();
@@ -347,8 +375,10 @@ export async function runGeminiCopilot(
     };
   }
 
-  const rows = getDatasetRows(dataset.id);
-  const contextText = `Base de datos activa: «${dataset.name}» (N=${rows.length} registros).\nVariables disponibles:\n${buildSchemaDescription(dataset)}\n\nConversación previa:\n${formatHistory(pastMessages) || "(ninguna)"}\n\nSolicitud del investigador: ${userMessage}`;
+  const historyScan = scanForPii(pastMessages.map((m) => m.content).join("\n"));
+  const safePastMessages = historyScan.hasPii ? [] : pastMessages;
+
+  const contextText = `Base de datos activa: «${dataset.name}» (N=${rows.length} registros).\nVariables clínicas disponibles:\n${buildSchemaDescription(dataset)}\n\nConversación previa:\n${formatHistory(safePastMessages) || "(ninguna)"}\n\nSolicitud del investigador: ${userMessage}`;
 
   let primaryAnalysis: AnalysisResult | null = null;
   const forceAnalysis = wantsDataAnalysis(userMessage, dataset);
@@ -455,10 +485,10 @@ export async function runGeminiCopilot(
               response: {
                 ok: false,
                 error: errDetail,
-                variablesDisponibles: dataset.variables.map((v) => ({
+                variablesDisponibles: dataset.variables.filter(safeVariableForPrompt).map((v) => ({
                   name: v.name,
                   type: v.type,
-                  levels: v.levels?.slice(0, 8),
+                  levels: v.type === "categorical" || v.type === "binary" ? v.levels?.slice(0, 8) : undefined,
                 })),
               },
             },
@@ -472,7 +502,6 @@ export async function runGeminiCopilot(
         needsStreamingInterpretation = true;
         break;
       }
-      // Otherwise loop to let Gemini self-correct parameters from the error functionResponse
       needsStreamingInterpretation = true;
     }
 
@@ -548,8 +577,9 @@ export async function runGeminiCopilot(
       analysis: primaryAnalysis,
     };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    let friendly = `Error al consultar Gemini: ${msg}`;
+    const rawMsg = err instanceof Error ? err.message : String(err);
+    const msg = redactSensitiveText(rawMsg);
+    let friendly = `Error al consultar el servicio de IA: ${msg.slice(0, 180)}`;
     if (msg.includes("403") || msg.includes("PERMISSION_DENIED") || msg.includes("API_KEY_INVALID")) {
       friendly = "La clave de API de Gemini no es válida o no tiene permisos. Revisa **Settings > Secrets**.";
     } else if (msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED")) {

@@ -6,11 +6,16 @@ interface FieldInputProps {
   value: unknown;
   onChange: (val: unknown) => void;
   disabled?: boolean;
+  aiFilled?: boolean;
 }
 
-export function FieldInput({ field, value, onChange, disabled }: FieldInputProps) {
-  const baseInputClass =
-    "w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20 disabled:bg-slate-50 disabled:text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:disabled:bg-slate-800";
+export function FieldInput({ field, value, onChange, disabled, aiFilled }: FieldInputProps) {
+  const baseInputClass = cn(
+    "w-full rounded-xl border px-3.5 py-2.5 text-sm text-[#1D1D1F] placeholder:text-[#86868B] transition focus:border-[#0071E3] focus:bg-white focus:outline-none focus:ring-4 focus:ring-[#0071E3]/10 disabled:opacity-60 dark:text-[#F5F5F7] dark:placeholder:text-[#6E6E73] dark:focus:border-[#0A84FF] dark:focus:bg-[#1C1C1E] dark:focus:ring-[#0A84FF]/15",
+    aiFilled
+      ? "border-[#0071E3]/60 bg-white ring-2 ring-[#0071E3]/10 dark:border-[#0A84FF]/60 dark:bg-[#1C1C1E]"
+      : "border-transparent bg-[#F5F5F7] dark:border-white/[0.08] dark:bg-[#1C1C1E]"
+  );
 
   const selectedChecks: string[] = Array.isArray(value)
     ? value.map(String)
@@ -19,13 +24,25 @@ export function FieldInput({ field, value, onChange, disabled }: FieldInputProps
       : [];
 
   return (
-    <div className="space-y-1.5">
+    <div
+      className={cn(
+        "space-y-1.5 rounded-2xl transition-colors",
+        aiFilled && "bg-[#0071E3]/[0.04] p-3.5 dark:bg-[#0A84FF]/[0.08]"
+      )}
+    >
       <div className="flex items-baseline justify-between gap-2">
-        <label className="text-sm font-medium text-slate-800 dark:text-slate-200">
-          {field.label}
-          {field.required && <span className="ml-1 text-rose-600 dark:text-rose-400">*</span>}
-        </label>
-        {field.unit && <span className="font-mono text-xs text-slate-500 dark:text-slate-400">{field.unit}</span>}
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-sm font-medium text-[#1D1D1F] dark:text-[#F5F5F7]">
+            {field.label}
+            {field.required && <span className="ml-1 text-rose-600 dark:text-rose-400">*</span>}
+          </label>
+          {aiFilled && (
+            <span className="text-[11px] font-medium text-[#0071E3] dark:text-[#0A84FF]">
+              · Autocompletado · Revisar
+            </span>
+          )}
+        </div>
+        {field.unit && <span className="font-mono text-xs text-[#6E6E73] dark:text-[#98989D]">{field.unit}</span>}
       </div>
 
       {field.type === "text" && (
@@ -64,7 +81,7 @@ export function FieldInput({ field, value, onChange, disabled }: FieldInputProps
             data-testid={`field-${field.name}`}
           />
           {field.unit && (
-            <span className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2 font-mono text-xs text-slate-400">
+            <span className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2 font-mono text-xs text-[#86868B]">
               {field.unit}
             </span>
           )}
@@ -110,10 +127,10 @@ export function FieldInput({ field, value, onChange, disabled }: FieldInputProps
                 disabled={disabled}
                 onClick={() => onChange(ch)}
                 className={cn(
-                  "rounded-xl border px-3.5 py-2 text-sm font-medium transition-colors",
+                  "rounded-full border px-4 py-2 text-sm font-medium transition-all",
                   active
-                    ? "border-sky-600 bg-sky-50 text-sky-800 dark:border-sky-400 dark:bg-sky-950/60 dark:text-sky-200"
-                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+                    ? "border-[#0071E3] bg-[#0071E3]/[0.08] text-[#0071E3] dark:border-[#0A84FF] dark:bg-[#0A84FF]/[0.15] dark:text-[#0A84FF]"
+                    : "border-black/[0.08] bg-[#F5F5F7] text-[#1D1D1F] hover:bg-black/[0.06] dark:border-white/[0.1] dark:bg-[#1C1C1E] dark:text-[#E5E5EA] dark:hover:bg-white/[0.08]"
                 )}
               >
                 {ch}
@@ -137,10 +154,10 @@ export function FieldInput({ field, value, onChange, disabled }: FieldInputProps
                 disabled={disabled}
                 onClick={() => onChange(opt.val)}
                 className={cn(
-                  "rounded-xl border px-4 py-2 text-sm font-medium transition-colors",
+                  "rounded-full border px-4 py-2 text-sm font-medium transition-all",
                   active
-                    ? "border-sky-600 bg-sky-50 text-sky-800 dark:border-sky-400 dark:bg-sky-950/60 dark:text-sky-200"
-                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+                    ? "border-[#0071E3] bg-[#0071E3]/[0.08] text-[#0071E3] dark:border-[#0A84FF] dark:bg-[#0A84FF]/[0.15] dark:text-[#0A84FF]"
+                    : "border-black/[0.08] bg-[#F5F5F7] text-[#1D1D1F] hover:bg-black/[0.06] dark:border-white/[0.1] dark:bg-[#1C1C1E] dark:text-[#E5E5EA] dark:hover:bg-white/[0.08]"
                 )}
               >
                 {opt.label}
@@ -158,10 +175,10 @@ export function FieldInput({ field, value, onChange, disabled }: FieldInputProps
               <label
                 key={ch}
                 className={cn(
-                  "flex cursor-pointer items-center gap-2.5 rounded-xl border px-3.5 py-2 text-sm transition-colors",
+                  "flex cursor-pointer items-center gap-2.5 rounded-xl border px-3.5 py-2.5 text-sm transition-all",
                   checked
-                    ? "border-sky-500 bg-sky-50/70 text-sky-900 dark:border-sky-500 dark:bg-sky-950/40 dark:text-sky-200"
-                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                    ? "border-[#0071E3]/50 bg-[#0071E3]/[0.06] text-[#1D1D1F] dark:border-[#0A84FF]/60 dark:bg-[#0A84FF]/[0.12] dark:text-white"
+                    : "border-transparent bg-[#F5F5F7] text-[#424245] hover:bg-black/[0.05] dark:border-white/[0.08] dark:bg-[#1C1C1E] dark:text-[#D1D1D6]"
                 )}
               >
                 <input
@@ -172,7 +189,7 @@ export function FieldInput({ field, value, onChange, disabled }: FieldInputProps
                     const next = checked ? selectedChecks.filter((s) => s !== ch) : [...selectedChecks, ch];
                     onChange(next);
                   }}
-                  className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                  className="h-4 w-4 rounded border-black/20 text-[#0071E3] focus:ring-[#0071E3] dark:border-white/20 dark:text-[#0A84FF]"
                 />
                 <span>{ch}</span>
               </label>
@@ -182,7 +199,7 @@ export function FieldInput({ field, value, onChange, disabled }: FieldInputProps
       )}
 
       {(field.help || (field.type === "number" && (field.min !== null || field.max !== null))) && (
-        <p className="text-xs text-slate-500 dark:text-slate-400">
+        <p className="text-xs text-[#6E6E73] dark:text-[#98989D]">
           {field.help ||
             `Rango clínico válido: ${field.min !== null ? field.min : "−∞"} a ${field.max !== null ? field.max : "+∞"}${field.unit ? ` ${field.unit}` : ""}`}
         </p>

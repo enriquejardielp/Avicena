@@ -20,7 +20,20 @@ export class ApiError extends Error {
 
 export function errMsg(err: unknown, fallback = "Ha ocurrido un error inesperado."): string {
   if (err instanceof ApiError) return err.message;
-  if (err instanceof Error && err.message) return err.message;
+  if (err instanceof Error && err.message) {
+    if (err.message.startsWith("{") && err.message.includes('"operationType"')) {
+      try {
+        const parsed = JSON.parse(err.message) as { error?: string };
+        if (parsed.error?.toLowerCase().includes("permission")) {
+          return "No tienes permisos suficientes para esta operación en la base de datos.";
+        }
+        return parsed.error || fallback;
+      } catch {
+        return fallback;
+      }
+    }
+    return err.message;
+  }
   return fallback;
 }
 

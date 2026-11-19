@@ -5,105 +5,451 @@
       "description": "Perfil privado de usuario autenticado en Avicena (PII aislada por UID).",
       "type": "object",
       "properties": {
-        "uid": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "email": {
-          "type": "string",
-          "format": "email",
-          "minLength": 3,
-          "maxLength": 200
-        },
-        "displayName": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 120
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "date-time"
-        }
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "minLength": 3, "maxLength": 200 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "email", "displayName", "createdAt", "updatedAt"]
     },
-    "ClinicalProject": {
-      "title": "ClinicalProject",
-      "description": "Estudio clínico creado por un investigador (propietario administrador por defecto).",
+    "UserProjectRef": {
+      "title": "UserProjectRef",
+      "description": "Índice privado de estudios clínicos a los que pertenece un usuario.",
       "type": "object",
       "properties": {
-        "name": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 160
-        },
-        "description": {
-          "type": "string",
-          "maxLength": 1000
-        },
-        "ownerId": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "date-time"
-        }
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "role": { "type": "string", "enum": ["admin", "coordinador", "investigador", "monitor_clinico", "estadistico", "admin_tecnico", "capturador"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "name", "description", "ownerId", "role", "createdAt", "updatedAt"]
+    },
+    "ProjectInvite": {
+      "title": "ProjectInvite",
+      "description": "Invitación por correo electrónico con caducidad para colaborar en un estudio clínico.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "projectOwnerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "invitedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "email": { "type": "string", "format": "email", "minLength": 3, "maxLength": 200 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": { "type": "string", "enum": ["admin", "coordinador", "investigador", "monitor_clinico", "estadistico", "admin_tecnico", "capturador"] },
+        "status": { "type": "string", "enum": ["pending", "accepted"] },
+        "acceptedUid": { "type": "string", "maxLength": 128 },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "projectName", "projectOwnerId", "invitedByUid", "email", "name", "role", "status", "expiresAt", "createdAt", "updatedAt"]
+    },
+    "ClinicalProject": {
+      "title": "ClinicalProject",
+      "description": "Estudio clínico creado por un investigador.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["name", "description", "ownerId", "createdAt", "updatedAt"]
     },
-    "ProjectMember": {
-      "title": "ProjectMember",
-      "description": "Membresía y rol asignado a un usuario dentro de un estudio clínico compartido.",
+    "StudyGovernance": {
+      "title": "StudyGovernance",
+      "description": "Política de gobernanza, envío a IA externa, consentimiento activo y requisitos de autenticación por estudio.",
       "type": "object",
       "properties": {
-        "projectId": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "userId": {
-          "type": "string",
-          "maxLength": 128
-        },
-        "email": {
-          "type": "string",
-          "format": "email",
-          "minLength": 3,
-          "maxLength": 200
-        },
-        "name": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 120
-        },
-        "role": {
-          "type": "string",
-          "enum": ["admin", "investigador", "capturador"]
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "date-time"
-        }
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "aiEnabled": { "type": "boolean" },
+        "aiAllowClinicalText": { "type": "boolean" },
+        "aiAllowDatasetContext": { "type": "boolean" },
+        "aiDpaConfirmed": { "type": "boolean" },
+        "requireMfa": { "type": "boolean" },
+        "requireActiveConsent": { "type": "boolean" },
+        "updatedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["projectId", "email", "name", "role", "createdAt", "updatedAt"]
+      "required": ["projectId", "aiEnabled", "aiAllowClinicalText", "aiAllowDatasetContext", "aiDpaConfirmed", "requireMfa", "updatedBy", "updatedAt"]
+    },
+    "StudyLifecycle": {
+      "title": "StudyLifecycle",
+      "description": "Estado del ciclo de vida del estudio clínico (reclutamiento, cierre, bloqueo de base) y registro de enmiendas de protocolo.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "studyStatus": { "type": "string", "enum": ["borrador", "reclutamiento", "seguimiento", "cerrado", "bloqueado", "archivado"] },
+        "protocolVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "amendments": { "type": "array" },
+        "lastStatusReason": { "type": "string", "maxLength": 500 },
+        "updatedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "updatedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "studyStatus", "protocolVersion", "amendments", "updatedBy", "updatedByName", "updatedAt"]
+    },
+    "ProjectMetaIndex": {
+      "title": "ProjectMetaIndex",
+      "description": "Catálogo acotado de identificadores de recursos del estudio y contadores de shards para lectura directa por ID.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberIds": { "type": "array" },
+        "datasetIds": { "type": "array" },
+        "formIds": { "type": "array" },
+        "inviteIds": { "type": "array" },
+        "crfRecordIds": { "type": "array" },
+        "crfVersionIds": { "type": "array" },
+        "vaultIds": { "type": "array" },
+        "consentIds": { "type": "array" },
+        "auditLogIds": { "type": "array" },
+        "lastAuditHash": { "type": "string", "maxLength": 128 },
+        "analysisIds": { "type": "array" },
+        "shardCounts": { "type": "object" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "memberIds", "datasetIds", "formIds", "crfRecordIds", "analysisIds", "updatedAt"]
+    },
+    "MetaShard": {
+      "title": "MetaShard",
+      "description": "Bloque particionado (máximo 500 IDs) para escalabilidad de índices sin alcanzar el límite de 1 MiB de Firestore.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "kind": { "type": "string", "enum": ["crfRecordIds", "crfVersionIds", "auditLogIds", "vaultIds", "consentIds", "queryIds", "deviationIds", "signatureIds"] },
+        "shardIndex": { "type": "number" },
+        "ids": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "kind", "shardIndex", "ids", "updatedAt"]
+    },
+    "MemberIndex": {
+      "title": "MemberIndex",
+      "description": "Índice privado por miembro para lectura directa por getDoc de sus propios registros CRF y mensajes IA sin consultas list.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "crfRecordIds": { "type": "array" },
+        "chatMessageIds": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "userId", "crfRecordIds", "chatMessageIds", "updatedAt"]
+    },
+    "ProjectMember": {
+      "title": "ProjectMember",
+      "description": "Membresía activa y rol asignado a un usuario dentro de un estudio clínico compartido.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectOwnerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "email": { "type": "string", "format": "email", "minLength": 3, "maxLength": 200 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": { "type": "string", "enum": ["admin", "coordinador", "investigador", "monitor_clinico", "estadistico", "admin_tecnico", "capturador"] },
+        "status": { "type": "string", "enum": ["active", "suspended"] },
+        "inviteId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "projectOwnerId", "userId", "email", "name", "role", "createdAt", "updatedAt"]
+    },
+    "ClinicalDataset": {
+      "title": "ClinicalDataset",
+      "description": "Base de datos analítica pseudonimizada (importada por CSV/Excel o vinculada a un formulario CRF).",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "projectOwnerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "source": { "type": "string", "enum": ["upload", "form"] },
+        "formId": { "type": "string", "maxLength": 128 },
+        "variables": { "type": "array" },
+        "nRows": { "type": "number" },
+        "chunkCount": { "type": "number" },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "projectOwnerId", "name", "source", "variables", "nRows", "chunkCount", "createdBy", "createdAt", "updatedAt"]
+    },
+    "DatasetChunk": {
+      "title": "DatasetChunk",
+      "description": "Bloque paginado de filas tabulares de una base de datos importada.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "datasetId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "chunkIndex": { "type": "number" },
+        "rows": { "type": "array" },
+        "updatedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "datasetId", "chunkIndex", "rows", "updatedBy", "updatedAt"]
+    },
+    "ClinicalForm": {
+      "title": "ClinicalForm",
+      "description": "Cuaderno de recogida de datos clínicos (CRF) estructurado con validación de rangos y versión de plantilla.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "projectOwnerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "datasetId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "fields": { "type": "array" },
+        "formVersion": { "type": "number" },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "projectOwnerId", "datasetId", "name", "description", "fields", "createdBy", "createdAt", "updatedAt"]
+    },
+    "CrfRecord": {
+      "title": "CrfRecord",
+      "description": "Registro pseudonimizado de paciente capturado mediante CRF con control de estado y versión.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "projectOwnerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "formId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "datasetId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "subjectPseudoId": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["borrador", "completado", "enviado", "verificado", "bloqueado"] },
+        "version": { "type": "number" },
+        "formVersion": { "type": "number" },
+        "lastChangeReason": { "type": "string", "maxLength": 500 },
+        "lastSignatureId": { "type": "string", "maxLength": 128 },
+        "seq": { "type": "number" },
+        "data": { "type": "object" },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "updatedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "projectOwnerId", "formId", "datasetId", "seq", "data", "createdBy", "updatedBy", "createdAt", "updatedAt"]
+    },
+    "CrfVersion": {
+      "title": "CrfVersion",
+      "description": "Instantánea inmutable de modificaciones y transiciones de estado en un registro CRF.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "recordId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "version": { "type": "number" },
+        "formVersion": { "type": "number" },
+        "previousStatus": { "type": "string" },
+        "newStatus": { "type": "string", "enum": ["borrador", "completado", "enviado", "verificado", "bloqueado"] },
+        "previousData": { "type": "object" },
+        "newData": { "type": "object" },
+        "changedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "changedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "changedAt": { "type": "string", "format": "date-time" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "signatureId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["projectId", "recordId", "version", "newStatus", "previousData", "newData", "changedBy", "changedByName", "changedAt", "reason"]
+    },
+    "IdentityVaultEntry": {
+      "title": "IdentityVaultEntry",
+      "description": "Bóveda lógica aislada de correspondencia entre subjectPseudoId e identidad cifrada AES-256-GCM.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "subjectPseudoId": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "blindIndex": { "type": "string", "minLength": 32, "maxLength": 128 },
+        "sealedPayload": { "type": "object" },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "subjectPseudoId", "blindIndex", "sealedPayload", "createdBy", "createdAt"]
+    },
+    "BlindIndexEntry": {
+      "title": "BlindIndexEntry",
+      "description": "Índice ciego HMAC-SHA256 sin PII para deduplicación O(1) de participantes por roles de captura.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "blindIndex": { "type": "string", "minLength": 32, "maxLength": 128 },
+        "subjectPseudoId": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "blindIndex", "subjectPseudoId", "createdBy", "createdAt"]
+    },
+    "ConsentRecord": {
+      "title": "ConsentRecord",
+      "description": "Registro de consentimiento informado vinculado a un subjectPseudoId y versión de protocolo.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "subjectPseudoId": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "protocolVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "documentTitle": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "method": { "type": "string", "enum": ["escrito", "electronico", "testigo_imparcial"] },
+        "status": { "type": "string", "enum": ["vigente", "retirado", "pendiente", "requiere_reconsentimiento"] },
+        "signedAt": { "type": "string", "maxLength": 64 },
+        "withdrawnAt": { "type": "string", "maxLength": 64 },
+        "withdrawalReason": { "type": "string", "maxLength": 500 },
+        "recordedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "recordedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "subjectPseudoId", "protocolVersion", "documentTitle", "method", "status", "signedAt", "recordedBy", "recordedByName", "createdAt", "updatedAt"]
+    },
+    "ConsentState": {
+      "title": "ConsentState",
+      "description": "Estado vigente consolidado por subjectPseudoId para validación atómica en reglas de seguridad Firestore.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "subjectPseudoId": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "status": { "type": "string", "enum": ["vigente", "retirado", "pendiente", "requiere_reconsentimiento"] },
+        "consentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "updatedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "subjectPseudoId", "status", "consentId", "updatedBy", "updatedAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Registro inmutable de auditoría encadenado por HMAC-SHA256 con soporte de rotación por keyId.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "actorRole": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "action": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "resourceType": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "resourceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "outcome": { "type": "string", "enum": ["SUCCESS", "DENIED", "ERROR"] },
+        "reason": { "type": "string", "maxLength": 500 },
+        "details": { "type": "object" },
+        "timestampUtc": { "type": "string", "minLength": 10, "maxLength": 64 },
+        "prevHash": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "entryHash": { "type": "string", "minLength": 32, "maxLength": 128 },
+        "keyId": { "type": "string", "minLength": 1, "maxLength": 64 }
+      },
+      "required": ["projectId", "actorUid", "actorName", "actorRole", "action", "resourceType", "resourceId", "outcome", "timestampUtc", "prevHash", "entryHash"]
+    },
+    "SavedAnalysis": {
+      "title": "SavedAnalysis",
+      "description": "Resultado bioestadístico y configuración gráfica guardada en el estudio con soporte de favoritos.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "projectOwnerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "datasetId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "datasetName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "test": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "summary": { "type": "string", "maxLength": 4000 },
+        "params": { "type": "object" },
+        "tables": { "type": "array" },
+        "charts": { "type": "array" },
+        "interpretation": { "type": "string", "maxLength": 20000 },
+        "source": { "type": "string", "enum": ["manual", "copilot"] },
+        "isPinned": { "type": "boolean" },
+        "note": { "type": "string", "maxLength": 1000 },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "projectOwnerId", "datasetId", "datasetName", "test", "title", "summary", "params", "tables", "charts", "source", "isPinned", "note", "createdBy", "createdByName", "createdAt", "updatedAt"]
+    },
+    "CopilotChatMessage": {
+      "title": "CopilotChatMessage",
+      "description": "Mensaje del historial de conversación entre el investigador y el Copiloto Bioestadístico.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "datasetId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "role": { "type": "string", "enum": ["user", "assistant"] },
+        "content": { "type": "string", "maxLength": 30000 },
+        "analysis": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "datasetId", "userId", "role", "content", "createdAt"]
+    },
+    "ClinicalQuery": {
+      "title": "ClinicalQuery",
+      "description": "Query de monitorización clínica (discrepancia / aclaración) sobre un registro CRF sin alteración directa por el monitor.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "recordId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "formId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "subjectPseudoId": { "type": "string", "maxLength": 64 },
+        "variableName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "status": { "type": "string", "enum": ["abierta", "respondida", "correccion_solicitada", "cerrada", "cancelada"] },
+        "openedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "openedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "openedAt": { "type": "string", "maxLength": 64 },
+        "resolvedBy": { "type": "string", "maxLength": 128 },
+        "resolvedAt": { "type": "string", "maxLength": 64 },
+        "messages": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "recordId", "formId", "variableName", "status", "openedBy", "openedByName", "openedAt", "messages", "updatedAt"]
+    },
+    "ProtocolDeviation": {
+      "title": "ProtocolDeviation",
+      "description": "Desviación de protocolo clínico con evaluación de impacto y plan CAPA.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "subjectPseudoId": { "type": "string", "maxLength": 64 },
+        "recordId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "minLength": 3, "maxLength": 200 },
+        "description": { "type": "string", "minLength": 5, "maxLength": 2000 },
+        "severity": { "type": "string", "enum": ["menor", "mayor", "critica"] },
+        "status": { "type": "string", "enum": ["abierta", "en_investigacion", "capa_en_curso", "cerrada"] },
+        "occurredAt": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "detectedAt": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "impactAssessment": { "type": "string", "maxLength": 2000 },
+        "capaPlan": { "type": "string", "maxLength": 2000 },
+        "responsibleName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "resolutionNotes": { "type": "string", "maxLength": 2000 },
+        "reportedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "reportedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "title", "description", "severity", "status", "occurredAt", "detectedAt", "impactAssessment", "capaPlan", "responsibleName", "reportedBy", "reportedByName", "createdAt", "updatedAt"]
+    },
+    "ElectronicSignature": {
+      "title": "ElectronicSignature",
+      "description": "Manifiesto inmutable de aprobación electrónica con reautenticación reciente (trazabilidad 21 CFR Part 11; no QES eIDAS).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "targetType": { "type": "string", "enum": ["crf_record", "study_lifecycle"] },
+        "targetId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "targetVersion": { "type": "number" },
+        "meaning": { "type": "string", "minLength": 3, "maxLength": 200 },
+        "reason": { "type": "string", "minLength": 5, "maxLength": 500 },
+        "signerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "signerName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "signerRole": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "authTimeUtc": { "type": "string", "minLength": 10, "maxLength": 64 },
+        "signedAtUtc": { "type": "string", "minLength": 10, "maxLength": 64 },
+        "attestationHash": { "type": "string", "minLength": 32, "maxLength": 128 },
+        "keyId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "signatureLevel": { "type": "string", "enum": ["reauthenticated_hmac_attestation"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "projectId", "targetType", "targetId", "meaning", "reason", "signerUid", "signerName", "signerRole", "authTimeUtc", "signedAtUtc", "attestationHash", "keyId", "signatureLevel", "createdAt"]
     }
   },
   "firestore": {
@@ -111,13 +457,93 @@
       "schema": { "$ref": "#/entities/UserProfile" },
       "description": "Perfiles privados de usuario protegidos por UID."
     },
+    "/userProjects/{userId}/items/{projectId}": {
+      "schema": { "$ref": "#/entities/UserProjectRef" },
+      "description": "Índice privado de estudios visibles por usuario."
+    },
+    "/projectInvites/{inviteId}": {
+      "schema": { "$ref": "#/entities/ProjectInvite" },
+      "description": "Invitaciones por correo electrónico con caducidad."
+    },
     "/projects/{projectId}": {
       "schema": { "$ref": "#/entities/ClinicalProject" },
       "description": "Metadatos de estudios clínicos creados en Avicena."
     },
+    "/projects/{projectId}/governance/{docId}": {
+      "schema": { "$ref": "#/entities/StudyGovernance" },
+      "description": "Configuración de gobernanza de IA externa, MFA y consentimiento del estudio."
+    },
+    "/projects/{projectId}/meta/{metaId}": {
+      "schema": { "$ref": "#/entities/ProjectMetaIndex" },
+      "description": "Catálogo de IDs del estudio para recuperación directa por getDoc."
+    },
+    "/projects/{projectId}/memberIndexes/{userId}": {
+      "schema": { "$ref": "#/entities/MemberIndex" },
+      "description": "Índice privado por miembro para lectura directa por getDoc sin queries list."
+    },
     "/projects/{projectId}/members/{memberId}": {
       "schema": { "$ref": "#/entities/ProjectMember" },
       "description": "Miembros compartidos y roles específicos por estudio."
+    },
+    "/projects/{projectId}/datasets/{datasetId}": {
+      "schema": { "$ref": "#/entities/ClinicalDataset" },
+      "description": "Bases de datos clínicas pseudonimizadas de cada estudio."
+    },
+    "/projects/{projectId}/datasetChunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/DatasetChunk" },
+      "description": "Bloques de filas tabulares de datasets importados."
+    },
+    "/projects/{projectId}/forms/{formId}": {
+      "schema": { "$ref": "#/entities/ClinicalForm" },
+      "description": "Formularios CRF clínicos de cada estudio."
+    },
+    "/projects/{projectId}/crfRecords/{recordId}": {
+      "schema": { "$ref": "#/entities/CrfRecord" },
+      "description": "Registros individuales pseudonimizados de pacientes capturados mediante CRF."
+    },
+    "/projects/{projectId}/crfVersions/{versionId}": {
+      "schema": { "$ref": "#/entities/CrfVersion" },
+      "description": "Historial inmutable de versiones de registros CRF."
+    },
+    "/projects/{projectId}/identityVault/{subjectPseudoId}": {
+      "schema": { "$ref": "#/entities/IdentityVaultEntry" },
+      "description": "Bóveda lógica aislada para correspondencia cifrada de identidad."
+    },
+    "/projects/{projectId}/blindIndexes/{blindHash}": {
+      "schema": { "$ref": "#/entities/BlindIndexEntry" },
+      "description": "Índice ciego HMAC sin PII para detección de duplicados por roles de captura."
+    },
+    "/projects/{projectId}/consentRecords/{consentId}": {
+      "schema": { "$ref": "#/entities/ConsentRecord" },
+      "description": "Registros de consentimiento informado por sujeto pseudonimizado."
+    },
+    "/projects/{projectId}/consentStates/{subjectPseudoId}": {
+      "schema": { "$ref": "#/entities/ConsentState" },
+      "description": "Estado actual de consentimiento por participante para validación en reglas Firestore."
+    },
+    "/projects/{projectId}/auditLogs/{auditId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Pista de auditoría inmutable encadenada por HMAC."
+    },
+    "/projects/{projectId}/savedAnalyses/{analysisId}": {
+      "schema": { "$ref": "#/entities/SavedAnalysis" },
+      "description": "Análisis bioestadísticos y gráficos guardados en cada estudio."
+    },
+    "/projects/{projectId}/chatMessages/{messageId}": {
+      "schema": { "$ref": "#/entities/CopilotChatMessage" },
+      "description": "Historial de consultas al Asistente IA por estudio y dataset."
+    },
+    "/projects/{projectId}/queries/{queryId}": {
+      "schema": { "$ref": "#/entities/ClinicalQuery" },
+      "description": "Queries de monitorización clínica abiertas y respondidas."
+    },
+    "/projects/{projectId}/deviations/{deviationId}": {
+      "schema": { "$ref": "#/entities/ProtocolDeviation" },
+      "description": "Desviaciones de protocolo y acciones CAPA."
+    },
+    "/projects/{projectId}/electronicSignatures/{sigId}": {
+      "schema": { "$ref": "#/entities/ElectronicSignature" },
+      "description": "Manifiestos inmutables de aprobación electrónica con reautenticación."
     }
   }
 }
