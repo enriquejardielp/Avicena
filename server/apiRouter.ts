@@ -5,12 +5,12 @@ import path from "node:path";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { z } from "zod";
+import { VALID_TEST_NAMES } from "../shared/analysisSpec.ts";
 import type {
   Cell,
   ChatMessage,
   Dataset,
   FormField,
-  TestName,
   UserRow,
 } from "../src/lib/types.ts";
 import {
@@ -33,7 +33,8 @@ import {
   sealIdentityPayload,
   unsealIdentityPayload,
 } from "./pseudonymizer.ts";
-import { runStatTest, StatsError } from "./statsEngine.ts";
+import { StatsError } from "./statsEngine.ts";
+import { executeStatisticalAnalysis, VerifiedEngineUnavailableError } from "./statsWorkerClient.ts";
 import { cleanCell, inferVariables, nowIso, uid } from "./store.ts";
 import {
   StudyAccessError,
@@ -62,29 +63,7 @@ export interface ApiRouterDeps {
   runCopilot?: typeof runGeminiCopilot;
 }
 
-const VALID_TESTS: [TestName, ...TestName[]] = [
-  "descriptives",
-  "frequencies",
-  "ttest",
-  "paired_ttest",
-  "mannwhitney",
-  "chi2",
-  "anova",
-  "correlation",
-  "linreg",
-  "logreg",
-  "kaplan_meier",
-  "table1",
-  "friedman",
-  "mcnemar",
-  "epidemiology_2x2",
-  "diagnostic_test",
-  "roc_auc",
-  "kappa_agreement",
-  "cox_ph",
-  "poisson_reg",
-  "sample_size",
-];
+const VALID_TESTS = VALID_TEST_NAMES;
 
 const idSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/, "Identificador no válido.");
 
@@ -93,7 +72,7 @@ const cellSchema = z.union([z.string().max(2000), z.number(), z.boolean(), z.nul
 const variableSchema = z.object({
   name: z.string().min(1).max(160),
   label: z.string().max(240),
-  type: z.enum(["numeric", "categorical", "binary", "date", "text"]),
+  type: z.enum(["numeric", "ordinal", "categorical", "binary", "date", "text"]),
   levels: z.array(z.string().max(200)).max(200),
 });
 
@@ -121,6 +100,14 @@ const analyzeSchema = z.object({
   rows: z.array(z.record(z.string(), cellSchema)).max(50000),
   test: z.enum(VALID_TESTS),
   params: z.record(z.string(), z.unknown()).default({}),
+  options: z
+    .object({
+      seed: z.number().int().min(0).max(2_147_483_647).optional(),
+      alpha: z.number().min(0.0001).max(0.25).optional(),
+      confLevel: z.number().min(0.75).max(0.999).optional(),
+      tieMethod: z.enum(["efron", "breslow"]).optional(),
+    })
+    .optional(),
 });
 
 const formFieldSchema = z.object({
@@ -185,6 +172,7 @@ const VALID_AUDIT_ACTIONS: [AuditAction, ...AuditAction[]] = [
   "EXPORT_DATA",
   "ANALYSIS_RUN",
   "ANALYSIS_SAVED",
+  "ANALYSIS_UPDATED",
   "ANALYSIS_DELETED",
   "AI_EXTRACT",
   "AI_CHAT",
@@ -374,6 +362,10 @@ function handleRouteError(
   }
   if (err instanceof StatsError) {
     res.status(422).json({ code: "STATS_VALIDATION_ERROR", detail: err.message });
+    return;
+  }
+  if (err instanceof VerifiedEngineUnavailableError) {
+    res.status(503).json({ code: "VERIFIED_ENGINE_UNAVAILABLE", detail: err.message });
     return;
   }
   const msg = redactSensitiveText(err instanceof Error ? err.message : String(err));
@@ -588,7 +580,7 @@ export function createApiRouter(deps?: ApiRouterDeps): express.Router {
       return;
     }
 
-    const { projectId, dataset, rows, test, params } = parsedBody.data;
+    const { projectId, dataset, rows, test, params, options } = parsedBody.data;
     if (dataset.project_id !== projectId) {
       res.status(403).json({
         code: "PROJECT_MISMATCH",
@@ -606,7 +598,13 @@ export function createApiRouter(deps?: ApiRouterDeps): express.Router {
         datasetId: dataset.id,
       });
 
-      const result = runStatTest(test, rows as Record<string, Cell>[], dataset.variables, params);
+      const envelope = await executeStatisticalAnalysis({
+        test,
+        rows: rows as Record<string, Cell>[],
+        variables: dataset.variables,
+        params,
+        specOptions: options,
+      });
       logSecurityEvent("info", "analysis_executed", {
         worm_audit: true,
         action: "ANALYSIS_RUN",
@@ -614,10 +612,15 @@ export function createApiRouter(deps?: ApiRouterDeps): express.Router {
         datasetId: dataset.id,
         test,
         rowCount: rows.length,
+        engine: envelope.result.provenance?.engine ?? "unknown",
+        verifiedByLibrary: envelope.result.provenance?.verified_by_library ?? false,
+        specHash: envelope.specHash,
+        datasetSha256: envelope.datasetSha256,
+        seed: envelope.spec.options.seed,
         actorUid: req.verifiedUser!.uid,
         role: ctx.role,
       });
-      res.json(result);
+      res.json(envelope.result);
     } catch (err) {
       handleRouteError(res, err, "Error al ejecutar la prueba estadística.", {
         projectId,

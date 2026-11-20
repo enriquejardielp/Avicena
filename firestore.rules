@@ -354,7 +354,7 @@ service cloud.firestore {
 
     function isValidSavedAnalysis(data) {
       return data.keys().hasAll(['projectId', 'projectOwnerId', 'datasetId', 'datasetName', 'test', 'title', 'summary', 'params', 'tables', 'charts', 'source', 'isPinned', 'note', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['projectId', 'projectOwnerId', 'datasetId', 'datasetName', 'test', 'title', 'summary', 'params', 'tables', 'charts', 'interpretation', 'source', 'isPinned', 'note', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['projectId', 'projectOwnerId', 'datasetId', 'datasetName', 'test', 'title', 'summary', 'params', 'tables', 'charts', 'interpretation', 'source', 'isPinned', 'note', 'provenance', 'analysisSpec', 'specHash', 'datasetSha256', 'reproducibleScript', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
         && data.projectId is string && isValidId(data.projectId)
         && data.projectOwnerId is string && isValidId(data.projectOwnerId)
         && data.datasetId is string && isValidId(data.datasetId)
@@ -371,6 +371,11 @@ service cloud.firestore {
         && data.source in ['manual', 'copilot']
         && data.isPinned is bool
         && data.note is string && data.note.size() <= 1000
+        && (!('provenance' in data) || data.provenance == null || data.provenance is map)
+        && (!('analysisSpec' in data) || data.analysisSpec == null || data.analysisSpec is map)
+        && (!('specHash' in data) || data.specHash == null || (data.specHash is string && data.specHash.size() <= 128))
+        && (!('datasetSha256' in data) || data.datasetSha256 == null || (data.datasetSha256 is string && data.datasetSha256.size() <= 128))
+        && (!('reproducibleScript' in data) || data.reproducibleScript == null || (data.reproducibleScript is string && data.reproducibleScript.size() <= 40000))
         && data.createdBy is string && isValidId(data.createdBy)
         && data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 120
         && data.createdAt is timestamp

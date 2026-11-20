@@ -1,6 +1,7 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Check, Copy, Download } from "lucide-react";
 import {
+  Area,
   Bar,
   BarChart,
   CartesianGrid,
@@ -23,7 +24,7 @@ import { toast } from "sonner";
 import { copyChartImageToClipboard, downloadChartPng } from "../../lib/clipboardExport.ts";
 import type { ResultChart } from "../../lib/types.ts";
 
-const PALETTE = ["#0071E3", "#10B981", "#F59E0B", "#6366F1", "#EC4899", "#0EA5E9", "#8B5CF6", "#14B8A6"];
+const COLORS = ["#0071E3", "#059669", "#D97706", "#DC2626", "#7C3AED", "#0891B2", "#EA580C", "#4F46E5"];
 
 function heatmapColor(r: number | null): { fill: string; text: string } {
   if (r === null || !Number.isFinite(r)) {
@@ -31,14 +32,13 @@ function heatmapColor(r: number | null): { fill: string; text: string } {
   }
   const clamped = Math.max(-1, Math.min(1, r));
   const abs = Math.abs(clamped);
+  const alpha = 0.12 + abs * 0.72;
   if (clamped >= 0) {
-    const alpha = 0.12 + abs * 0.72;
     return {
       fill: `rgba(0, 113, 227, ${alpha.toFixed(2)})`,
       text: abs > 0.52 ? "#FFFFFF" : "#0F172A",
     };
   }
-  const alpha = 0.12 + abs * 0.72;
   return {
     fill: `rgba(225, 29, 72, ${alpha.toFixed(2)})`,
     text: abs > 0.52 ? "#FFFFFF" : "#0F172A",
@@ -56,13 +56,24 @@ function ChartTooltip({
   label,
 }: {
   active?: boolean;
-  payload?: Array<{ name?: string; value?: unknown; color?: string; payload?: Record<string, unknown> }>;
+  payload?: Array<{
+    name?: string;
+    dataKey?: string;
+    value?: unknown;
+    color?: string;
+    payload?: Record<string, unknown>;
+  }>;
   label?: unknown;
 }) {
   if (!active || !payload?.length) return null;
   const row = payload[0]?.payload;
   const isBox = row && "q1" in row && "q3" in row && "median" in row;
   const isRoc = row && "cutoff" in row && "tpr" in row && "fpr" in row;
+
+  const visibleEntries = payload.filter((entry) => {
+    const dk = String(entry.dataKey ?? "");
+    return !dk.endsWith("__ciRange");
+  });
 
   return (
     <div className="rounded-xl border border-black/[0.08] bg-white/95 px-3 py-2 text-xs shadow-lg backdrop-blur-md dark:border-white/[0.12] dark:bg-[#1C1C1E]/95">
@@ -92,17 +103,27 @@ function ChartTooltip({
         </div>
       ) : (
         <div className="space-y-0.5">
-          {payload.map((entry, idx) => (
-            <div key={idx} className="flex items-center justify-between gap-3">
-              <span className="flex items-center gap-1.5 text-slate-600 dark:text-slate-300">
-                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: entry.color || PALETTE[0] }} />
-                {entry.name || "Valor"}
-              </span>
-              <span className="font-mono font-semibold tabular-nums text-slate-900 dark:text-white">
-                {formatTick(entry.value)}
-              </span>
-            </div>
-          ))}
+          {visibleEntries.map((entry, idx) => {
+            const key = String(entry.dataKey ?? entry.name ?? "");
+            const ciLo = row?.[`${key}__ci_lo`];
+            const ciHi = row?.[`${key}__ci_hi`];
+            const hasCi = typeof ciLo === "number" && typeof ciHi === "number";
+            return (
+              <div key={idx} className="flex items-center justify-between gap-3">
+                <span className="flex items-center gap-1.5 text-slate-600 dark:text-slate-300">
+                  <span className="h-2 w-2 rounded-full" style={{ backgroundColor: entry.color || "#0071E3" }} />
+                  {entry.name || "Valor"}
+                </span>
+                <span className="font-mono font-semibold tabular-nums text-slate-900 dark:text-white">
+                  {hasCi
+                    ? `${(Number(entry.value) * 100).toFixed(1)}% (IC 95%: ${(ciLo * 100).toFixed(1)}–${(
+                        ciHi * 100
+                      ).toFixed(1)}%)`
+                    : formatTick(entry.value)}
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -112,16 +133,44 @@ function ChartTooltip({
 export function StatChart({ chart, height = 300 }: { chart: ResultChart; height?: number }) {
   const chartBoxRef = useRef<HTMLDivElement | null>(null);
   const [copied, setCopied] = useState(false);
+  const [showSurvivalCi, setShowSurvivalCi] = useState<boolean>(true);
+
+  const hasSurvivalCi = useMemo(() => {
+    if (chart.type !== "survival" || !chart.data?.length) return false;
+    return chart.series.some((s) =>
+      chart.data.some((pt) => typeof pt[`${s}__ci_lo`] === "number" && typeof pt[`${s}__ci_hi`] === "number")
+    );
+  }, [chart]);
+
+  const survivalData = useMemo(() => {
+    if (chart.type !== "survival" || !chart.data?.length) return [];
+    return chart.data.map((pt) => {
+      const next: Record<string, unknown> = { ...pt };
+      for (const s of chart.series) {
+        const lo = pt[`${s}__ci_lo`];
+        const hi = pt[`${s}__ci_hi`];
+        if (typeof lo === "number" && typeof hi === "number") {
+          next[`${s}__ciRange`] = [lo, hi];
+        }
+      }
+      return next;
+    });
+  }, [chart]);
 
   if (!chart.data || chart.data.length === 0) return null;
 
   const axisStyle = { fontSize: 11, fill: "currentColor" };
   const gridColor = "rgba(148, 163, 184, 0.22)";
   const isOr = chart.meta?.ref === 1 || chart.meta?.refline === 1;
+  const isRefZero = Boolean(chart.meta?.refZero);
 
   const subtitle =
     chart.type === "survival"
-      ? "Estimador de Kaplan-Meier S(t)"
+      ? hasSurvivalCi
+        ? showSurvivalCi
+          ? "Estimador de Kaplan-Meier S(t) · IC 95% (Greenwood log-log)"
+          : "Estimador de Kaplan-Meier S(t)"
+        : "Estimador de Kaplan-Meier S(t)"
       : chart.type === "roc"
         ? `AUC = ${String(chart.meta?.auc ?? "—")}`
         : chart.type === "box"
@@ -132,9 +181,13 @@ export function StatChart({ chart, height = 300 }: { chart: ResultChart; height?
               ? "Escala divergente: azul positivo (+1) · rojo negativo (-1)"
               : chart.type === "scatter"
                 ? `${String(chart.meta?.ylabel ?? "Y")} vs ${String(chart.meta?.xlabel ?? "X")}`
-                : isOr
-                  ? "Línea de referencia = 1"
-                  : undefined;
+                : chart.type === "line"
+                  ? "Serie temporal / evolución continua"
+                  : isOr
+                    ? "Línea de referencia = 1"
+                    : isRefZero
+                      ? "Línea base = 0"
+                      : undefined;
 
   const handleCopyChart = async () => {
     if (!chartBoxRef.current) return;
@@ -167,7 +220,7 @@ export function StatChart({ chart, height = 300 }: { chart: ResultChart; height?
   if (chart.type === "survival") {
     body = (
       <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={chart.data} margin={{ top: 10, right: 16, left: 0, bottom: 8 }}>
+        <ComposedChart data={survivalData} margin={{ top: 10, right: 16, left: 0, bottom: 8 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
           <XAxis
             dataKey={chart.x}
@@ -185,19 +238,34 @@ export function StatChart({ chart, height = 300 }: { chart: ResultChart; height?
           />
           <Tooltip content={<ChartTooltip />} />
           <Legend wrapperStyle={{ fontSize: 12 }} />
+          {showSurvivalCi &&
+            hasSurvivalCi &&
+            chart.series.map((s, idx) => (
+              <Area
+                key={`${s}-ci`}
+                type="stepAfter"
+                dataKey={`${s}__ciRange`}
+                stroke="none"
+                fill={COLORS[idx % COLORS.length]}
+                fillOpacity={0.16}
+                legendType="none"
+                tooltipType="none"
+                isAnimationActive={false}
+              />
+            ))}
           {chart.series.map((s, idx) => (
             <Line
               key={s}
               type="stepAfter"
               dataKey={s}
               name={s}
-              stroke={PALETTE[idx % PALETTE.length]}
+              stroke={COLORS[idx % COLORS.length]}
               strokeWidth={2.5}
               dot={false}
               isAnimationActive={false}
             />
           ))}
-        </LineChart>
+        </ComposedChart>
       </ResponsiveContainer>
     );
   } else if (chart.type === "roc") {
@@ -278,7 +346,7 @@ export function StatChart({ chart, height = 300 }: { chart: ResultChart; height?
             labelLine={{ stroke: "rgba(148, 163, 184, 0.55)", strokeWidth: 1 }}
           >
             {chart.data.map((_, idx) => (
-              <RechartsCell key={idx} fill={PALETTE[idx % PALETTE.length]} />
+              <RechartsCell key={idx} fill={COLORS[idx % COLORS.length]} />
             ))}
           </Pie>
           <Tooltip
@@ -372,7 +440,9 @@ export function StatChart({ chart, height = 300 }: { chart: ResultChart; height?
                     >
                       <title>
                         {`${rowVar} × ${colVar}: r = ${entry.r !== null ? entry.r.toFixed(3) : "—"}${
-                          entry.p !== null && rowVar !== colVar ? ` (p = ${entry.p < 0.001 ? "<0.001" : entry.p.toFixed(3)})` : ""
+                          entry.p !== null && rowVar !== colVar
+                            ? ` (p = ${entry.p < 0.001 ? "<0.001" : entry.p.toFixed(3)})`
+                            : ""
                         }`}
                       </title>
                     </rect>
@@ -404,17 +474,49 @@ export function StatChart({ chart, height = 300 }: { chart: ResultChart; height?
           <Tooltip content={<ChartTooltip />} />
           {chart.series.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
           {isOr && <ReferenceLine y={1} stroke="#DC2626" strokeDasharray="4 4" strokeWidth={1.5} />}
+          {isRefZero && <ReferenceLine y={0} stroke="#64748B" strokeDasharray="3 3" strokeWidth={1.25} />}
           {chart.series.map((s, idx) => (
             <Bar
               key={s}
               dataKey={s}
               name={s === "count" ? "Frecuencia" : s}
-              fill={PALETTE[idx % PALETTE.length]}
+              fill={COLORS[idx % COLORS.length]}
               radius={[6, 6, 0, 0]}
               isAnimationActive={false}
             />
           ))}
         </BarChart>
+      </ResponsiveContainer>
+    );
+  } else if (chart.type === "line") {
+    body = (
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={chart.data} margin={{ top: 10, right: 16, left: 0, bottom: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
+          <XAxis dataKey={chart.x} tick={axisStyle} tickLine={false} axisLine={{ stroke: gridColor }} />
+          <YAxis tick={axisStyle} tickLine={false} axisLine={{ stroke: gridColor }} domain={["auto", "auto"]} />
+          <Tooltip content={<ChartTooltip />} />
+          <Legend wrapperStyle={{ fontSize: 12 }} />
+          {isOr && <ReferenceLine y={1} stroke="#DC2626" strokeDasharray="4 4" strokeWidth={1.5} />}
+          {isRefZero && <ReferenceLine y={0} stroke="#64748B" strokeDasharray="3 3" strokeWidth={1.25} />}
+          {chart.series.map((s, idx) => {
+            const isCiOrRef = s.includes("IC") || s === "Ideal";
+            return (
+              <Line
+                key={s}
+                type="monotone"
+                dataKey={s}
+                name={s}
+                stroke={isCiOrRef ? "#94A3B8" : COLORS[idx % COLORS.length]}
+                strokeWidth={isCiOrRef ? 1.5 : 2.25}
+                strokeDasharray={isCiOrRef ? "4 4" : undefined}
+                dot={isCiOrRef ? false : chart.data.length <= 45 ? { r: 2.5 } : false}
+                connectNulls={false}
+                isAnimationActive={false}
+              />
+            );
+          })}
+        </LineChart>
       </ResponsiveContainer>
     );
   } else if (chart.type === "box") {
@@ -497,7 +599,7 @@ export function StatChart({ chart, height = 300 }: { chart: ResultChart; height?
             name="Observaciones"
             data={chart.data}
             fill="#0071E3"
-            fillOpacity={0.68}
+            fillOpacity={0.72}
             isAnimationActive={false}
           />
           {hasTrend && (
@@ -533,7 +635,31 @@ export function StatChart({ chart, height = 300 }: { chart: ResultChart; height?
           )}
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {chart.type === "survival" && hasSurvivalCi && (
+            <button
+              type="button"
+              onClick={() => setShowSurvivalCi((v) => !v)}
+              data-testid="km-ci-toggle"
+              aria-pressed={showSurvivalCi}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                showSurvivalCi
+                  ? "border-[#0071E3]/40 bg-[#0071E3]/10 text-[#0071E3] dark:border-[#0A84FF]/50 dark:bg-[#0A84FF]/15 dark:text-[#0A84FF]"
+                  : "border-black/[0.08] bg-white text-[#6E6E73] hover:bg-[#F5F5F7] dark:border-white/[0.1] dark:bg-[#1C1C1E] dark:text-[#98989D]"
+              }`}
+              title="Mostrar u ocultar el sombreado del intervalo de confianza del 95%"
+            >
+              <span
+                className="h-2.5 w-2.5 rounded-xs border"
+                style={{
+                  backgroundColor: showSurvivalCi ? "rgba(0, 113, 227, 0.28)" : "transparent",
+                  borderColor: "#0071E3",
+                }}
+              />
+              {showSurvivalCi ? "IC 95% sombreado" : "Sombrear IC 95%"}
+            </button>
+          )}
+
           <button
             type="button"
             onClick={handleCopyChart}

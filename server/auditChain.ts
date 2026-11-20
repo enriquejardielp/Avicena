@@ -26,6 +26,7 @@ export type AuditAction =
   | "EXPORT_DATA"
   | "ANALYSIS_RUN"
   | "ANALYSIS_SAVED"
+  | "ANALYSIS_UPDATED"
   | "ANALYSIS_DELETED"
   | "AI_EXTRACT"
   | "AI_CHAT"

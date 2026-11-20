@@ -19,7 +19,9 @@ import {
 } from "firebase/firestore";
 import { db, handleFirestoreError, OperationType } from "../firebase.ts";
 import { apiPost } from "./api.ts";
+import { sortLevelsSmart } from "./statAssumptions.ts";
 import type {
+  AnalysisProvenance,
   AnalysisResult,
   AuditLogEntry,
   Cell,
@@ -122,8 +124,8 @@ export function buildFormFieldsFromVariables(
       ? v.levels.map((l) => String(l).trim()).filter(Boolean)
       : [];
 
-    if (!levels.length && nonNullSample.length && (v.type === "binary" || v.type === "categorical")) {
-      levels = Array.from(new Set(nonNullSample)).sort().slice(0, 50);
+    if (!levels.length && nonNullSample.length && (v.type === "binary" || v.type === "categorical" || v.type === "ordinal")) {
+      levels = sortLevelsSmart(nonNullSample, v.type === "ordinal" ? v.levels : undefined).slice(0, 50);
     }
 
     const hasLongText = nonNullSample.some((s) => s.length > 120);
@@ -150,6 +152,16 @@ export function buildFormFieldsFromVariables(
       } else {
         type = "radio";
         choices = levels.slice(0, 50);
+      }
+    } else if (v.type === "ordinal") {
+      if (levels.length > 0 && levels.length <= 5) {
+        type = "radio";
+        choices = levels.slice(0, 50);
+      } else if (levels.length > 5) {
+        type = "select";
+        choices = levels.slice(0, 50);
+      } else {
+        type = "number";
       }
     } else if (v.type === "categorical") {
       if (looksLikeIdOrFreeTextName || allUniqueStrings) {
@@ -192,17 +204,12 @@ export function buildFormVariables(fields: FormField[]): Variable[] {
 
 export function recomputeVarLevels(variables: Variable[], rows: Record<string, Cell>[]): Variable[] {
   return variables.map((v) => {
-    if (v.type === "categorical" || v.type === "binary") {
-      const levels = Array.from(
-        new Set(
-          rows
-            .map((r) => r[v.name])
-            .filter((val) => val !== null && val !== undefined && val !== "")
-            .map((val) => String(val))
-        )
-      )
-        .sort()
-        .slice(0, 50);
+    if (v.type === "categorical" || v.type === "binary" || v.type === "ordinal") {
+      const observed = rows
+        .map((r) => r[v.name])
+        .filter((val) => val !== null && val !== undefined && val !== "")
+        .map((val) => String(val).trim());
+      const levels = sortLevelsSmart(observed, v.type === "ordinal" ? v.levels : undefined).slice(0, 50);
       return { ...v, levels };
     }
     return { ...v, levels: [] };
@@ -247,6 +254,8 @@ function serializeAnalysis(a: AnalysisResult): Record<string, unknown> {
     summary: String(a.summary ?? "").slice(0, 4000),
     tables: serializeTables(a.tables ?? []),
     charts: Array.isArray(a.charts) ? a.charts.slice(0, 10) : [],
+    ...(a.provenance ? { provenance: a.provenance } : {}),
+    ...(a.reproducible_script ? { reproducible_script: String(a.reproducible_script).slice(0, 40000) } : {}),
   };
 }
 
@@ -258,6 +267,8 @@ function deserializeAnalysis(raw: unknown): AnalysisResult | null {
     summary?: string;
     tables?: unknown;
     charts?: AnalysisResult["charts"];
+    provenance?: AnalysisProvenance;
+    reproducible_script?: string;
   };
   return {
     test: String(obj.test ?? ""),
@@ -265,6 +276,8 @@ function deserializeAnalysis(raw: unknown): AnalysisResult | null {
     summary: String(obj.summary ?? ""),
     tables: deserializeTables(obj.tables),
     charts: Array.isArray(obj.charts) ? obj.charts : [],
+    ...(obj.provenance ? { provenance: obj.provenance } : {}),
+    ...(obj.reproducible_script ? { reproducible_script: obj.reproducible_script } : {}),
   };
 }
 
@@ -3625,6 +3638,11 @@ export async function listSavedAnalyses(projectId: string): Promise<SavedAnalysi
         source: "manual" | "copilot";
         isPinned: boolean;
         note: string;
+        provenance?: AnalysisProvenance | null;
+        analysisSpec?: Record<string, unknown> | null;
+        specHash?: string | null;
+        datasetSha256?: string | null;
+        reproducibleScript?: string | null;
         createdBy: string;
         createdByName: string;
         createdAt: unknown;
@@ -3645,6 +3663,11 @@ export async function listSavedAnalyses(projectId: string): Promise<SavedAnalysi
         source: d.source ?? "manual",
         is_pinned: Boolean(d.isPinned),
         note: d.note ?? "",
+        provenance: d.provenance ?? null,
+        analysis_spec: d.analysisSpec ?? null,
+        spec_hash: d.specHash ?? null,
+        dataset_sha256: d.datasetSha256 ?? null,
+        reproducible_script: d.reproducibleScript ?? null,
         created_by: d.createdBy,
         created_by_name: d.createdByName,
         created_at: tsToIso(d.createdAt),
@@ -3680,6 +3703,18 @@ export async function saveAnalysisToProject(
     if (!projSnap.exists()) throw new Error("Estudio no encontrado.");
     const ownerId = (projSnap.data() as { ownerId: string }).ownerId;
     const serialized = serializeAnalysis(result);
+    const provenance = result.provenance ?? null;
+    const specHash = provenance?.spec_hash ?? null;
+    const datasetSha256 = provenance?.dataset_sha256 ?? null;
+    const reproducibleScript = result.reproducible_script ? String(result.reproducible_script).slice(0, 40000) : null;
+    const analysisSpec = provenance
+      ? {
+          specVersion: provenance.spec_version,
+          test: String(result.test ?? "").slice(0, 64),
+          seed: provenance.seed,
+          params: options.params ?? {},
+        }
+      : null;
 
     await setDoc(doc(db, "projects", projectId, "savedAnalyses", analysisId), {
       projectId,
@@ -3696,6 +3731,11 @@ export async function saveAnalysisToProject(
       source: options.source,
       isPinned: Boolean(options.isPinned),
       note: "",
+      ...(provenance ? { provenance } : {}),
+      ...(analysisSpec ? { analysisSpec } : {}),
+      ...(specHash ? { specHash } : {}),
+      ...(datasetSha256 ? { datasetSha256 } : {}),
+      ...(reproducibleScript ? { reproducibleScript } : {}),
       createdBy: user.uid,
       createdByName: creatorName,
       createdAt: serverTimestamp(),
@@ -3714,7 +3754,18 @@ export async function saveAnalysisToProject(
         resourceType: "savedAnalysis",
         resourceId: analysisId,
         outcome: "SUCCESS",
-        details: { test: result.test, datasetId: dataset.id },
+        details: {
+          test: result.test,
+          datasetId: dataset.id,
+          ...(provenance
+            ? {
+                engine: provenance.engine,
+                verifiedByLibrary: provenance.verified_by_library,
+                specHash: provenance.spec_hash,
+                datasetSha256: provenance.dataset_sha256,
+              }
+            : {}),
+        },
       },
       { strict: true }
     );
@@ -3735,6 +3786,11 @@ export async function saveAnalysisToProject(
       source: options.source,
       is_pinned: Boolean(options.isPinned),
       note: "",
+      provenance,
+      analysis_spec: analysisSpec,
+      spec_hash: specHash,
+      dataset_sha256: datasetSha256,
+      reproducible_script: reproducibleScript,
       created_by: user.uid,
       created_by_name: creatorName,
       created_at: now,
@@ -3755,10 +3811,31 @@ export async function updateSavedAnalysisMeta(
   const path = `projects/${projectId}/savedAnalyses/${analysisId}`;
   try {
     const updatePayload: Record<string, unknown> = { updatedAt: serverTimestamp() };
-    if (patch.is_pinned !== undefined) updatePayload.isPinned = Boolean(patch.is_pinned);
-    if (patch.title !== undefined) updatePayload.title = patch.title.trim().slice(0, 240) || "Análisis estadístico";
-    if (patch.note !== undefined) updatePayload.note = patch.note.slice(0, 1000);
+    const changedFields: string[] = [];
+    if (patch.is_pinned !== undefined) {
+      updatePayload.isPinned = Boolean(patch.is_pinned);
+      changedFields.push("isPinned");
+    }
+    if (patch.title !== undefined) {
+      updatePayload.title = patch.title.trim().slice(0, 240) || "Análisis estadístico";
+      changedFields.push("title");
+    }
+    if (patch.note !== undefined) {
+      updatePayload.note = patch.note.slice(0, 1000);
+      changedFields.push("note");
+    }
     await updateDoc(doc(db, "projects", projectId, "savedAnalyses", analysisId), updatePayload);
+    await appendAuditLog(
+      projectId,
+      {
+        action: "ANALYSIS_UPDATED",
+        resourceType: "savedAnalysis",
+        resourceId: analysisId,
+        outcome: "SUCCESS",
+        details: { updatedFields: changedFields },
+      },
+      { strict: true }
+    );
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }

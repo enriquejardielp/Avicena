@@ -7,10 +7,13 @@ import {
   type FunctionDeclaration,
   type Part,
 } from "@google/genai";
+import { VALID_TEST_NAMES } from "../shared/analysisSpec.ts";
 import type { AnalysisResult, Cell, ChatMessage, Dataset, TestName, Variable } from "../src/lib/types.ts";
 import { redactSensitiveText } from "./logger.ts";
+import { verifyNarrativeAgainstResult } from "./narrativeVerifier.ts";
 import { isLikelyIdentifierVariable, scanDatasetMetadataForPii, scanForPii } from "./piiGuard.ts";
-import { runStatTest, StatsError, TEST_DOCS } from "./statsEngine.ts";
+import { StatsError, TEST_DOCS } from "./statsEngine.ts";
+import { executeStatisticalAnalysis } from "./statsWorkerClient.ts";
 
 const PRIMARY_MODEL = "gemini-4-hydrogen";
 const FALLBACK_MODEL = "gemini-3.1-flash-lite";
@@ -18,29 +21,7 @@ const FALLBACK_MODEL = "gemini-3.1-flash-lite";
 // If PRIMARY_MODEL hits 503/high-demand or times out, skip directly to FALLBACK_MODEL for 2 minutes
 let preferFallbackUntil = 0;
 
-const VALID_TESTS: TestName[] = [
-  "descriptives",
-  "frequencies",
-  "ttest",
-  "paired_ttest",
-  "mannwhitney",
-  "chi2",
-  "anova",
-  "correlation",
-  "linreg",
-  "logreg",
-  "kaplan_meier",
-  "table1",
-  "friedman",
-  "mcnemar",
-  "epidemiology_2x2",
-  "diagnostic_test",
-  "roc_auc",
-  "kappa_agreement",
-  "cox_ph",
-  "poisson_reg",
-  "sample_size",
-];
+const VALID_TESTS: TestName[] = VALID_TEST_NAMES;
 
 const RUN_STAT_TEST_DECLARATION: FunctionDeclaration = {
   name: "run_statistical_test",
@@ -53,22 +34,22 @@ const RUN_STAT_TEST_DECLARATION: FunctionDeclaration = {
         type: Type.STRING,
         enum: VALID_TESTS,
         description:
-          "Identificador exacto de la prueba estadística a ejecutar en Avicena (ej. kaplan_meier, cox_ph, table1, ttest, mannwhitney, anova, chi2, logreg, linreg, roc_auc, epidemiology_2x2, correlation, descriptives, frequencies).",
+          "Identificador exacto de la prueba estadística a ejecutar en Avicena (incluye outlier_detection, missing_analysis, rm_anova, incidence_prevalence, icc, negbin_reg, multiple_testing, ts_trend_seasonal, ts_arima, etc.).",
       },
-      time: { type: Type.STRING, description: "Variable numérica de tiempo hasta el evento (kaplan_meier, cox_ph)." },
-      event: { type: Type.STRING, description: "Variable binaria de evento 0/1 o Sí/No (kaplan_meier, cox_ph)." },
-      group: { type: Type.STRING, description: "Variable categórica de estratificación o agrupación (kaplan_meier, ttest, mannwhitney, anova, table1)." },
-      outcome: { type: Type.STRING, description: "Variable dependiente o desenlace (ttest, mannwhitney, anova, linreg, logreg, poisson_reg, epidemiology_2x2, roc_auc)." },
+      time: { type: Type.STRING, description: "Variable numérica o temporal de tiempo (kaplan_meier, cox_ph, incidence_prevalence, ts_trend_seasonal, ts_arima)." },
+      event: { type: Type.STRING, description: "Variable binaria de evento 0/1 o Sí/No (kaplan_meier, cox_ph, incidence_prevalence)." },
+      group: { type: Type.STRING, description: "Variable categórica de estratificación o agrupación (kaplan_meier, ttest, mannwhitney, anova, table1, incidence_prevalence)." },
+      outcome: { type: Type.STRING, description: "Variable dependiente o desenlace (ttest, mannwhitney, anova, linreg, logreg, poisson_reg, negbin_reg, epidemiology_2x2, roc_auc, multiple_testing, ts_trend_seasonal, ts_arima)." },
       exposure: { type: Type.STRING, description: "Variable binaria de exposición (epidemiology_2x2)." },
       predictors: {
         type: Type.ARRAY,
         items: { type: Type.STRING },
-        description: "Lista de variables predictoras o covariables (linreg, logreg, poisson_reg, cox_ph).",
+        description: "Lista de variables predictoras o covariables (linreg, logreg, poisson_reg, negbin_reg, cox_ph, multiple_testing).",
       },
       vars: {
         type: Type.ARRAY,
         items: { type: Type.STRING },
-        description: "Lista de variables (descriptives, table1, correlation, friedman).",
+        description: "Lista de variables (descriptives, table1, outlier_detection, missing_analysis, correlation, rm_anova, friedman, icc).",
       },
       var: { type: Type.STRING, description: "Variable categórica única (frequencies)." },
       var1: { type: Type.STRING, description: "Primera variable pareada o evaluador 1 (paired_ttest, mcnemar, kappa_agreement)." },
@@ -78,20 +59,34 @@ const RUN_STAT_TEST_DECLARATION: FunctionDeclaration = {
       marker: { type: Type.STRING, description: "Marcador numérico continuo para curva ROC (roc_auc)." },
       test_var: { type: Type.STRING, description: "Variable binaria de prueba índice (diagnostic_test)." },
       gold_standard: { type: Type.STRING, description: "Variable binaria de referencia o gold standard (diagnostic_test)." },
-      method: { type: Type.STRING, enum: ["pearson", "spearman"], description: "Método de correlación." },
+      method: { type: Type.STRING, description: "Método estadístico (pearson|spearman|kendall para correlation; fdr_bh|holm|bonferroni para multiple_testing)." },
+      z_threshold: { type: Type.NUMBER, description: "Umbral |z| modificado para outlier_detection (por defecto 3.0)." },
+      icc_type: { type: Type.STRING, enum: ["ICC2_1", "ICC3_1", "ICC2_k"], description: "Tipo de ICC para icc." },
+      calc_mode: { type: Type.STRING, enum: ["sample_size", "power"], description: "Modo de cálculo en sample_size." },
       design: {
         type: Type.STRING,
-        enum: ["two_proportions", "two_means", "correlation"],
+        enum: ["two_proportions", "two_means", "correlation", "cohort_rr"],
         description: "Diseño para sample_size.",
       },
       alpha: { type: Type.NUMBER, description: "Nivel alfa para sample_size (por defecto 0.05)." },
       power: { type: Type.NUMBER, description: "Potencia 1-beta para sample_size (por defecto 0.8)." },
       ratio: { type: Type.NUMBER, description: "Razón n2/n1 para sample_size." },
-      p1: { type: Type.NUMBER, description: "Proporción grupo 1 para sample_size." },
+      n1: { type: Type.NUMBER, description: "Tamaño muestral n1 conocido en modo calc_mode='power'." },
+      p1: { type: Type.NUMBER, description: "Proporción grupo 1 o incidencia no expuestos para sample_size." },
       p2: { type: Type.NUMBER, description: "Proporción grupo 2 para sample_size." },
+      rr_val: { type: Type.NUMBER, description: "Riesgo relativo esperado para sample_size (design='cohort_rr')." },
       diff: { type: Type.NUMBER, description: "Diferencia mínima esperada entre medias para sample_size." },
       sd_val: { type: Type.NUMBER, description: "Desviación estándar esperada para sample_size." },
       r_val: { type: Type.NUMBER, description: "Correlación esperada r para sample_size." },
+      mode: { type: Type.STRING, enum: ["screen", "pvalues"], description: "Modo para multiple_testing." },
+      pvalues: { type: Type.ARRAY, items: { type: Type.NUMBER }, description: "Lista de p-valores para multiple_testing mode='pvalues'." },
+      labels: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Etiquetas opcionales para pvalues." },
+      period: { type: Type.NUMBER, description: "Periodo estacional (entero ≥ 2) para ts_trend_seasonal." },
+      p: { type: Type.NUMBER, description: "Orden AR para ts_arima." },
+      d: { type: Type.NUMBER, description: "Orden de diferenciación para ts_arima." },
+      q: { type: Type.NUMBER, description: "Orden MA para ts_arima." },
+      forecast_steps: { type: Type.NUMBER, description: "Horizonte de pronóstico para ts_arima." },
+      auto_order: { type: Type.BOOLEAN, description: "Selección automática (AIC/BIC) en ts_arima." },
     },
     required: ["test"],
   },
@@ -181,7 +176,9 @@ function buildSchemaDescription(ds: Dataset): string {
   return ds.variables
     .filter(safeVariableForPrompt)
     .map((v) => {
-      const allowLevels = (v.type === "categorical" || v.type === "binary") && !isLikelyIdentifierVariable(v.name, v.label);
+      const allowLevels =
+        (v.type === "categorical" || v.type === "binary" || v.type === "ordinal") &&
+        !isLikelyIdentifierVariable(v.name, v.label);
       const levels = allowLevels && v.levels?.length ? ` niveles=${JSON.stringify(v.levels.slice(0, 12))}` : "";
       const label = v.label ? ` «${v.label}»` : "";
       return `- ${v.name} (${v.type})${label}${levels}`;
@@ -282,6 +279,22 @@ function normalizeTestName(raw: unknown): TestName | null {
     regresion_logistica: "logreg",
     regresion_lineal: "linreg",
     poisson: "poisson_reg",
+    binomial_negativa: "negbin_reg",
+    negbin: "negbin_reg",
+    outliers: "outlier_detection",
+    atipicos: "outlier_detection",
+    perdidos: "missing_analysis",
+    missing: "missing_analysis",
+    anova_medidas_repetidas: "rm_anova",
+    medidas_repetidas: "rm_anova",
+    incidencia: "incidence_prevalence",
+    prevalencia: "incidence_prevalence",
+    intraclase: "icc",
+    fdr: "multiple_testing",
+    benjamini_hochberg: "multiple_testing",
+    arima: "ts_arima",
+    series_temporales: "ts_trend_seasonal",
+    tendencia_estacional: "ts_trend_seasonal",
   };
   return aliases[norm] ?? null;
 }
@@ -315,17 +328,20 @@ const COPILOT_SYSTEM = `Eres el Copiloto Bioestadístico de Avicena. Trabajas DI
 REGLAS CRÍTICAS:
 1. Tienes la herramienta \`run_statistical_test\` conectada al motor estadístico real de Avicena.
 2. SIEMPRE que el usuario pida un análisis, comparación, supervivencia (Kaplan-Meier / Log-Rank / Cox), mortalidad, Tabla 1, regresión, correlación, ROC, diagnóstico, OR/RR, frecuencias, descriptivos o tamaño muestral, DEBES llamar primero a \`run_statistical_test\` usando los nombres de variable EXACTOS del esquema proporcionado.
-3. NUNCA respondas "no has adjuntado los cálculos", NUNCA pidas al usuario que pegue resultados ni le sugieras usar software estadístico externo: Avicena ejecuta los cálculos directamente mediante \`run_statistical_test\`.
-4. Si la herramienta devuelve un error por nombre de variable o parámetro, corrígelo y vuelve a llamar a \`run_statistical_test\`.
-5. Una vez recibidos los resultados reales de \`run_statistical_test\`, interpreta los hallazgos en español claro y riguroso:
-   - Reporta exactamente el valor p, IC 95%, medianas/medias/proporciones, estadísticos (χ², t, U, F, r, OR, HR, AUC) y tamaños del efecto devueltos por la herramienta.
-   - Comenta supuestos estadísticos y limitaciones clínicas relevantes (N, número de eventos, posibles variables de confusión).
+3. RIGOR PARAMÉTRICO vs. NO PARAMÉTRICO Y VARIABLES ORDINALES:
+   - NUNCA apliques pruebas paramétricas puras (\`ttest\`, correlación \`pearson\`) por defecto sobre variables **ordinales** (escalas clínicas, EVA/VAS, NYHA, ECOG, Likert, estadios, gravedad) ni cuando los datos incumplan normalidad (Shapiro-Wilk p < 0.05) o tengan muestras pequeñas asimétricas.
+   - Para comparar 2 grupos en variables **ordinales** o no normales usa \`mannwhitney\`; para ≥3 grupos usa \`anova\` (y reporta prioritariamente Kruskal-Wallis H y medianas/RIC cuando haya ordinalidad o Shapiro-Wilk p < 0.05); para medidas repetidas usa \`paired_ttest\` (priorizando Wilcoxon) o \`friedman\`; para correlación con variables ordinales o no normales usa \`correlation\` con \`"method": "spearman"\`.
+   - Si una ejecución devuelve alertas \`⚠\` de normalidad/ordinalidad, prioriza la alternativa no paramétrica correspondiente y explícalo claramente al investigador.
+4. NUNCA respondas "no has adjuntado los cálculos", NUNCA pidas al usuario que pegue resultados ni le sugieras usar software estadístico externo: Avicena ejecuta los cálculos directamente mediante \`run_statistical_test\`.
+5. Si la herramienta devuelve un error por nombre de variable o parámetro, corrígelo y vuelve a llamar a \`run_statistical_test\`.
+6. Una vez recibidos los resultados reales de \`run_statistical_test\`, interpreta los hallazgos en español claro y riguroso:
+   - Reporta únicamente las cifras exactas devueltas por la herramienta (o marcadores \`{{resultado.summary}}\`, \`{{resultado.tables[0].rows[0][0]}}\`). NUNCA calcules, redondees por tu cuenta ni inventes números que no aparezcan literalmente en los resultados calculados; un verificador automático bloqueará cualquier cifra no presente en la salida del motor.
+   - Comenta supuestos estadísticos (normalidad Shapiro-Wilk, escala ordinal vs continua, N, eventos, confusión, riesgos proporcionales o sobredispersión cuando aplique).
    - Sugiere el siguiente paso analítico que se puede ejecutar directamente en Avicena.
-   - Usa markdown limpio (###, viñetas, **negritas**) sin signos $ de LaTeX (escribe p < 0.001, χ², η², IC 95% directamente). Nunca inventes cifras no presentes en el resultado de la herramienta.
+   - Usa markdown limpio (###, viñetas, **negritas**) sin signos $ de LaTeX (escribe p < 0.001, χ², η², IC 95% directamente).
 
 Guía de pruebas disponibles en \`run_statistical_test\`:
-${TEST_DOCS}
-- sample_size: {"design":"two_proportions"|"two_means"|"correlation","alpha":0.05,"power":0.8,"ratio":1,"p1":0.3,"p2":0.15,"diff":10,"sd_val":15,"r_val":0.3}`;
+${TEST_DOCS}`;
 
 export interface StreamCallbacks {
   onStatus: (text: string) => void;
@@ -457,7 +473,13 @@ export async function runGeminiCopilot(
         cb.onStatus(`Ejecutando ${testName} sobre ${rows.length} registros…`);
 
         try {
-          const computed = runStatTest(testName, rows, dataset.variables, cleanParams);
+          const envelope = await executeStatisticalAnalysis({
+            test: testName,
+            rows,
+            variables: dataset.variables,
+            params: cleanParams,
+          });
+          const computed = envelope.result;
           primaryAnalysis = computed;
           cb.onAnalysis(computed);
           fnResponseParts.push({
@@ -488,7 +510,10 @@ export async function runGeminiCopilot(
                 variablesDisponibles: dataset.variables.filter(safeVariableForPrompt).map((v) => ({
                   name: v.name,
                   type: v.type,
-                  levels: v.type === "categorical" || v.type === "binary" ? v.levels?.slice(0, 8) : undefined,
+                  levels:
+                    v.type === "categorical" || v.type === "binary" || v.type === "ordinal"
+                      ? v.levels?.slice(0, 8)
+                      : undefined,
                 })),
               },
             },
@@ -513,12 +538,12 @@ export async function runGeminiCopilot(
       };
     }
 
-    cb.onStatus("Redactando interpretación clínica de los resultados…");
+    cb.onStatus("Redactando y verificando interpretación clínica…");
 
-    const streamInterpretation = async (promptContents: Content[], useTools: boolean) => {
+    const collectInterpretation = async (promptContents: Content[], useTools: boolean) => {
       const { result } = await runWithFallback(
         async (model) => {
-          const stream = await ai.models.generateContentStream({
+          const resp = await ai.models.generateContent({
             model,
             contents: promptContents,
             config: {
@@ -535,15 +560,7 @@ export async function runGeminiCopilot(
                 : {}),
             },
           });
-          let collected = "";
-          for await (const chunk of stream) {
-            const piece = chunk.text ?? "";
-            if (piece) {
-              collected += piece;
-              cb.onDelta(piece);
-            }
-          }
-          return collected;
+          return (resp.text ?? "").trim();
         },
         (notice) => cb.onStatus(notice),
         15000
@@ -553,7 +570,7 @@ export async function runGeminiCopilot(
 
     let fullText = "";
     try {
-      fullText = await streamInterpretation(contents, true);
+      fullText = await collectInterpretation(contents, true);
     } catch (streamErr) {
       if (!primaryAnalysis) throw streamErr;
       const summaryPrompt = `${contextText}\n\nResultados reales ya ejecutados por Avicena (${primaryAnalysis.title}):\n${JSON.stringify(
@@ -564,11 +581,39 @@ export async function runGeminiCopilot(
           tablas: primaryAnalysis.tables,
         }
       ).slice(0, 14000)}`;
-      fullText = await streamInterpretation([{ role: "user", parts: [{ text: summaryPrompt }] }], false);
+      fullText = await collectInterpretation([{ role: "user", parts: [{ text: summaryPrompt }] }], false);
     }
 
-    const finalText = fullText.trim() || (primaryAnalysis ? primaryAnalysis.summary : "(sin respuesta)");
-    if (!fullText.trim() && finalText) {
+    let finalText = fullText.trim() || (primaryAnalysis ? primaryAnalysis.summary : "(sin respuesta)");
+    if (primaryAnalysis) {
+      let check = verifyNarrativeAgainstResult(finalText, primaryAnalysis);
+      if (!check.ok && check.unverifiedNumbers.length > 0 && fullText.trim()) {
+        cb.onStatus("Verificando rigor numérico de la interpretación…");
+        try {
+          const retryPrompt: Content[] = [
+            ...contents,
+            { role: "model", parts: [{ text: fullText }] },
+            {
+              role: "user",
+              parts: [
+                {
+                  text: `Tu respuesta incluyó cifras (${check.unverifiedNumbers.join(", ")}) que NO aparecen literalmente en los resultados calculados por Avicena. Reescribe la interpretación clínica citando ÚNICAMENTE los números exactos presentes en \`resumen\` y \`tablas\` de la herramienta (sin calcular ni estimar cifras nuevas).`,
+                },
+              ],
+            },
+          ];
+          const corrected = await collectInterpretation(retryPrompt, true);
+          if (corrected) {
+            check = verifyNarrativeAgainstResult(corrected, primaryAnalysis);
+          }
+        } catch {
+          // Keep safe verified fallback from initial check
+        }
+      }
+      finalText = check.safeText;
+    }
+
+    if (finalText) {
       cb.onDelta(finalText);
     }
 

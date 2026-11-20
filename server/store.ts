@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { matchKnownOrdinalScale, sortLevelsSmart } from "../src/lib/statAssumptions.ts";
 import type { Cell, FieldType, FormField, VarType, Variable } from "../src/lib/types.ts";
 
 export function uid(): string {
@@ -28,6 +29,8 @@ export function cleanCell(v: unknown): Cell {
   return s;
 }
 
+const ORDINAL_COL_HINT = /(^|_)(eva|vas|escala|grado|estadio|nyha|ecog|killip|rankin|asa|likert|severidad|gravedad)(_|$)/i;
+
 export function inferVariables(rows: Record<string, Cell>[]): Variable[] {
   if (!rows.length) return [];
   const cols = Object.keys(rows[0]);
@@ -42,6 +45,13 @@ export function inferVariables(rows: Record<string, Cell>[]): Variable[] {
         const uniq = new Set(validNums);
         if (Array.from(uniq).every((u) => u === 0 || u === 1)) {
           vtype = "binary";
+        } else if (
+          ORDINAL_COL_HINT.test(col) &&
+          uniq.size >= 3 &&
+          uniq.size <= 11 &&
+          Array.from(uniq).every((u) => Number.isInteger(u))
+        ) {
+          vtype = "ordinal";
         } else if (uniq.size <= 6 && Array.from(uniq).every((u) => Number.isInteger(u)) && nonNull.length > 30) {
           vtype = "categorical";
         } else {
@@ -57,6 +67,8 @@ export function inferVariables(rows: Record<string, Cell>[]): Variable[] {
           vtype = "date";
         } else if (uniq.size === 2) {
           vtype = "binary";
+        } else if (matchKnownOrdinalScale(strVals)) {
+          vtype = "ordinal";
         } else if (uniq.size <= Math.max(12, Math.floor(0.05 * nonNull.length))) {
           vtype = "categorical";
         } else {
@@ -65,8 +77,8 @@ export function inferVariables(rows: Record<string, Cell>[]): Variable[] {
       }
     }
     const levels =
-      vtype === "categorical" || vtype === "binary"
-        ? Array.from(new Set(nonNull.map((v) => String(v).trim()))).sort().slice(0, 50)
+      vtype === "categorical" || vtype === "binary" || vtype === "ordinal"
+        ? sortLevelsSmart(nonNull.map((v) => String(v).trim())).slice(0, 50)
         : [];
     return { name: col, label: "", type: vtype, levels };
   });
@@ -74,17 +86,12 @@ export function inferVariables(rows: Record<string, Cell>[]): Variable[] {
 
 export function recomputeLevels(variables: Variable[], rows: Record<string, Cell>[]): Variable[] {
   return variables.map((v) => {
-    if (v.type === "categorical" || v.type === "binary") {
-      const levels = Array.from(
-        new Set(
-          rows
-            .map((r) => r[v.name])
-            .filter((val) => val !== null && val !== undefined && val !== "")
-            .map((val) => String(val))
-        )
-      )
-        .sort()
-        .slice(0, 50);
+    if (v.type === "categorical" || v.type === "binary" || v.type === "ordinal") {
+      const observed = rows
+        .map((r) => r[v.name])
+        .filter((val) => val !== null && val !== undefined && val !== "")
+        .map((val) => String(val).trim());
+      const levels = sortLevelsSmart(observed, v.type === "ordinal" ? v.levels : undefined).slice(0, 50);
       return { ...v, levels };
     }
     return { ...v, levels: [] };

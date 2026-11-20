@@ -1,4 +1,19 @@
+import { sortLevelsSmart, toNumericOrOrdinal } from "../src/lib/statAssumptions.ts";
 import type { AnalysisResult, Cell, ResultChart, ResultTable, TestName, Variable, VarType } from "../src/lib/types.ts";
+import {
+  holmAdjust,
+  kendallTauB,
+  runIcc,
+  runIncidencePrevalence,
+  runMissingAnalysis,
+  runMultipleTesting,
+  runNegBinReg,
+  runOutlierDetection,
+  runRmAnova,
+  runSampleSizeAdv,
+  runTsArima,
+  runTsTrendSeasonal,
+} from "./statsEngineAdvanced.ts";
 
 export class StatsError extends Error {
   constructor(message: string) {
@@ -308,6 +323,29 @@ function needCols(rows: Record<string, Cell>[], cols: (string | undefined)[]) {
   }
 }
 
+type VarMetaMap = Map<string, Variable>;
+
+function getOrderedVarLevels(rows: Record<string, Cell>[], varName: string, varMap?: VarMetaMap): string[] {
+  const meta = varMap?.get(varName);
+  const existing = meta?.levels?.length ? meta.levels : undefined;
+  const observed = rows
+    .map((r) => toLbl(r[varName]))
+    .filter((v): v is string => v !== null);
+  return sortLevelsSmart(observed, meta?.type === "ordinal" ? existing : undefined);
+}
+
+function getNumericSeries(
+  rows: Record<string, Cell>[],
+  varName: string,
+  varMap?: VarMetaMap
+): { values: (number | null)[]; isOrdinal: boolean; orderedLevels: string[] } {
+  const meta = varMap?.get(varName);
+  const isOrdinal = meta?.type === "ordinal";
+  const orderedLevels = isOrdinal ? getOrderedVarLevels(rows, varName, varMap) : [];
+  const values = rows.map((r) => toNumericOrOrdinal(r[varName], orderedLevels, isOrdinal));
+  return { values, isOrdinal, orderedLevels };
+}
+
 function getLevels(vals: (string | null)[]): string[] {
   const uniq = Array.from(new Set(vals.filter((v): v is string => v !== null)));
   const allNumeric = uniq.every((v) => Number.isFinite(Number(v)));
@@ -458,6 +496,46 @@ function ranksWithTies(arr: number[]): { ranks: number[]; tieSum: number } {
   return { ranks, tieSum };
 }
 
+function mannWhitneyCore(xa: number[], xb: number[]): { uStat: number; pVal: number; rbc: number; meanRa: number; meanRb: number } {
+  const all = [...xa, ...xb];
+  const { ranks, tieSum } = ranksWithTies(all);
+  const ra = ranks.slice(0, xa.length);
+  const rb = ranks.slice(xa.length);
+  const sumRa = ra.reduce((s, v) => s + v, 0);
+  const na = xa.length;
+  const nb = xb.length;
+  const u1 = sumRa - (na * (na + 1)) / 2;
+  const u2 = na * nb - u1;
+  const uStat = Math.min(u1, u2);
+  const muU = (na * nb) / 2;
+  const N = na + nb;
+  const varU = N > 1 ? ((na * nb) / 12) * (N + 1 - tieSum / (N * (N - 1))) : 0;
+  const z = varU > 0 ? (Math.abs(u1 - muU) - 0.5) / Math.sqrt(varU) : 0;
+  const pVal = varU > 0 ? 2 * (1 - normCdf(Math.max(0, z))) : 1;
+  const rbc = na * nb > 0 ? 1 - (2 * u1) / (na * nb) : 0;
+  return { uStat, pVal, rbc, meanRa: mean(ra), meanRb: mean(rb) };
+}
+
+function kruskalWallisCore(groups: number[][]): { H: number; pVal: number } {
+  const validGroups = groups.filter((g) => g.length > 0);
+  const all = validGroups.flat();
+  const N = all.length;
+  const k = validGroups.length;
+  if (k < 2 || N <= k) return { H: 0, pVal: 1 };
+  const { ranks, tieSum } = ranksWithTies(all);
+  let offset = 0;
+  let kwSum = 0;
+  for (const g of validGroups) {
+    const rSum = ranks.slice(offset, offset + g.length).reduce((s, v) => s + v, 0);
+    kwSum += (rSum * rSum) / g.length;
+    offset += g.length;
+  }
+  const Hraw = (12 / (N * (N + 1))) * kwSum - 3 * (N + 1);
+  const tieCorr = 1 - tieSum / (N * N * N - N);
+  const H = tieCorr > 0 ? Hraw / tieCorr : Hraw;
+  return { H, pVal: chi2Pval(Math.max(0, H), k - 1) };
+}
+
 // ============================================================================
 // Linear Algebra Helpers (OLS & Logistic Regression)
 // ============================================================================
@@ -587,7 +665,11 @@ function buildDesignMatrix(
 // Statistical Tests
 // ============================================================================
 
-function runDescriptives(rows: Record<string, Cell>[], params: Record<string, unknown>): Omit<AnalysisResult, "test"> {
+function runDescriptives(
+  rows: Record<string, Cell>[],
+  params: Record<string, unknown>,
+  varMap?: VarMetaMap
+): Omit<AnalysisResult, "test"> {
   const vars = (params.vars as string[]) || [];
   if (!vars.length) throw new StatsError("Selecciona al menos una variable.");
   needCols(rows, vars);
@@ -597,8 +679,11 @@ function runDescriptives(rows: Record<string, Cell>[], params: Record<string, un
   const charts: ResultChart[] = [];
 
   for (const v of vars) {
+    const meta = varMap?.get(v);
+    const isOrdinal = meta?.type === "ordinal";
     const nonNullCount = rows.filter((r) => toLbl(r[v]) !== null).length;
-    const nums = rows.map((r) => toNum(r[v])).filter((n): n is number => n !== null);
+    const { values: seriesVals } = getNumericSeries(rows, v, varMap);
+    const nums = seriesVals.filter((n): n is number => n !== null);
     if (nums.length >= Math.max(3, 0.5 * nonNullCount)) {
       const sorted = [...nums].sort((a, b) => a - b);
       const q1 = quantile(sorted, 0.25);
@@ -606,35 +691,36 @@ function runDescriptives(rows: Record<string, Cell>[], params: Record<string, un
       const q3 = quantile(sorted, 0.75);
       const m = mean(nums);
       const s = sd(nums, m);
-      const swP = shapiroWilkP(nums);
+      const swP = isOrdinal ? NaN : shapiroWilkP(nums);
       numRows.push([
-        v,
+        isOrdinal ? `${v} (ordinal)` : v,
         nums.length,
         rows.length - nums.length,
-        rn(m, 2),
-        rn(s, 2),
+        isOrdinal ? "—" : rn(m, 2),
+        isOrdinal ? "—" : rn(s, 2),
         rn(med, 2),
         `${rn(q1, 2)} – ${rn(q3, 2)}`,
         rn(sorted[0], 2),
         rn(sorted[sorted.length - 1], 2),
-        fp(swP),
+        isOrdinal ? "N/A (ordinal)" : fp(swP),
       ]);
-      if (charts.filter((c) => c.type === "histogram").length < 6) {
+      if (!isOrdinal && charts.filter((c) => c.type === "histogram").length < 6) {
         charts.push(buildHistogram(nums, `Distribución de ${v}`));
       }
-    } else {
+    }
+    if (isOrdinal || nums.length < Math.max(3, 0.5 * nonNullCount)) {
       const lbls = rows.map((r) => toLbl(r[v]));
-      const levels = getLevels(lbls);
+      const levels = isOrdinal ? getOrderedVarLevels(rows, v, varMap) : getLevels(lbls);
       const valid = lbls.filter((x) => x !== null).length;
       const catCounts = levels.map((lv) => {
         const count = lbls.filter((x) => x === lv).length;
         return { lv, count, pct: rn((100 * count) / Math.max(1, valid), 1) };
       });
       tables.push({
-        title: `Frecuencias: ${v}`,
+        title: `Frecuencias: ${v}${isOrdinal ? " (escala ordinal)" : ""}`,
         columns: ["Categoría", "n", "%"],
         rows: catCounts.map((c) => [c.lv, c.count, c.pct]),
-        note: "",
+        note: isOrdinal ? "Para variables ordinales se priorizan mediana, RIC y frecuencias ordenadas." : "",
       });
       if (levels.length > 0 && levels.length <= 10 && charts.filter((c) => c.type === "pie").length < 4) {
         charts.push({
@@ -654,7 +740,7 @@ function runDescriptives(rows: Record<string, Cell>[], params: Record<string, un
       title: "Estadística descriptiva",
       columns: ["Variable", "N", "Perdidos", "Media", "DE", "Mediana", "RIC (Q1–Q3)", "Mín", "Máx", "Shapiro-Wilk p"],
       rows: numRows,
-      note: "Shapiro-Wilk p < 0.05 sugiere distribución no normal.",
+      note: "Shapiro-Wilk p < 0.05 sugiere distribución no normal (preferir mediana, RIC y pruebas no paramétricas). En variables ordinales se omiten media/DE.",
     });
   }
 
@@ -717,11 +803,15 @@ function runFrequencies(rows: Record<string, Cell>[], params: Record<string, unk
   };
 }
 
-function runTTest(rows: Record<string, Cell>[], params: Record<string, unknown>): Omit<AnalysisResult, "test"> {
+function runTTest(
+  rows: Record<string, Cell>[],
+  params: Record<string, unknown>,
+  varMap?: VarMetaMap
+): Omit<AnalysisResult, "test"> {
   const yv = params.outcome as string;
   const gv = params.group as string;
   needCols(rows, [yv, gv]);
-  const yVals = rows.map((r) => toNum(r[yv]));
+  const { values: yVals, isOrdinal } = getNumericSeries(rows, yv, varMap);
   const gVals = rows.map((r) => toLbl(r[gv]));
   const levels = getLevels(gVals);
   if (levels.length !== 2) {
@@ -744,7 +834,13 @@ function runTTest(rows: Record<string, Cell>[], params: Record<string, unknown>)
   const nb = xb.length;
   const diff = ma - mb;
 
-  // Levene's test using median (Brown-Forsythe) or mean
+  // Shapiro-Wilk normality check per group
+  const swA = xa.length >= 3 ? shapiroWilkP(xa) : NaN;
+  const swB = xb.length >= 3 ? shapiroWilkP(xb) : NaN;
+  const nonNormal =
+    (Number.isFinite(swA) && swA < 0.05) || (Number.isFinite(swB) && swB < 0.05);
+
+  // Levene's test using median (Brown-Forsythe)
   const medA = quantile([...xa].sort((x, y) => x - y), 0.5);
   const medB = quantile([...xb].sort((x, y) => x - y), 0.5);
   const za = xa.map((v) => Math.abs(v - medA));
@@ -762,23 +858,41 @@ function runTTest(rows: Record<string, Cell>[], params: Record<string, unknown>)
   const sp2 = ((na - 1) * va + (nb - 1) * vb) / (na + nb - 2);
   const seStudent = Math.sqrt(sp2 * (1 / na + 1 / nb));
   const dfStudent = na + nb - 2;
-  const tStudent = diff / seStudent;
+  const tStudent = seStudent > 0 ? diff / seStudent : 0;
   const pStudent = tPvalTwoSided(tStudent, dfStudent);
   const tcStudent = tCrit975(dfStudent);
 
   // Welch (unequal variances)
   const seWelch = Math.sqrt(va / na + vb / nb);
-  const dfWelch = (va / na + vb / nb) ** 2 / ((va / na) ** 2 / (na - 1) + (vb / nb) ** 2 / (nb - 1));
-  const tWelch = diff / seWelch;
+  const dfWelch =
+    va / na + vb / nb > 0
+      ? (va / na + vb / nb) ** 2 / ((va / na) ** 2 / (na - 1) + (vb / nb) ** 2 / (nb - 1))
+      : dfStudent;
+  const tWelch = seWelch > 0 ? diff / seWelch : 0;
   const pWelch = tPvalTwoSided(tWelch, dfWelch);
   const tcWelch = tCrit975(dfWelch);
 
+  const mw = mannWhitneyCore(xa, xb);
   const cohenD = sp2 > 0 ? diff / Math.sqrt(sp2) : NaN;
   const useWelch = levP < 0.05;
   const activeP = useWelch ? pWelch : pStudent;
   const activeT = useWelch ? tWelch : tStudent;
   const activeName = useWelch ? "Varianzas desiguales (Welch)" : "Varianzas iguales (Student)";
   const sig = activeP < 0.05 ? "significativa" : "no significativa";
+
+  const assumptionFlags: string[] = [];
+  if (isOrdinal) {
+    assumptionFlags.push(`«${yv}» es una variable ordinal`);
+  }
+  if (nonNormal) {
+    assumptionFlags.push(
+      `normalidad rechazada por Shapiro-Wilk (${a}: p=${fp(swA)}, ${b}: p=${fp(swB)})`
+    );
+  }
+  const assumptionNote =
+    assumptionFlags.length > 0
+      ? ` ⚠ Supuesto paramétrico no cumplido (${assumptionFlags.join("; ")}): se recomienda contraste no paramétrico U de Mann-Whitney (U = ${rn(mw.uStat, 1)}, p = ${fp(mw.pVal)}).`
+      : "";
 
   return {
     title: `T de Student: ${yv} según ${gv}`,
@@ -787,7 +901,7 @@ function runTTest(rows: Record<string, Cell>[], params: Record<string, unknown>)
         title: "Estadísticos de grupo",
         columns: ["Grupo", "N", "Media", "DE", "EE", "Mediana"],
         rows: groupSummaryRows(yVals, gVals, [a, b]),
-        note: "",
+        note: `Shapiro-Wilk normalidad → ${a}: p = ${fp(swA)}; ${b}: p = ${fp(swB)}.`,
       },
       {
         title: "Prueba t para muestras independientes",
@@ -796,23 +910,34 @@ function runTTest(rows: Record<string, Cell>[], params: Record<string, unknown>)
           ["Varianzas iguales (Student)", rn(tStudent), rn(dfStudent, 1), fp(pStudent), rn(diff, 3), rn(diff - tcStudent * seStudent, 3), rn(diff + tcStudent * seStudent, 3)],
           ["Varianzas desiguales (Welch)", rn(tWelch), rn(dfWelch, 1), fp(pWelch), rn(diff, 3), rn(diff - tcWelch * seWelch, 3), rn(diff + tcWelch * seWelch, 3)],
         ],
-        note: `Levene F = ${rn(levF)}, p = ${fp(levP)}. d de Cohen = ${rn(cohenD)}.`,
+        note: `Levene F = ${rn(levF)}, p = ${fp(levP)}. d de Cohen = ${rn(cohenD)}.${assumptionNote}`,
       },
     ],
     charts: [buildBoxChart(yVals, gVals, `${yv} por ${gv}`)],
-    summary: `Diferencia de medias (${a} − ${b}) = ${rn(diff, 2)}; ${activeName}: t = ${rn(activeT, 2)}, p = ${fp(activeP)} → diferencia ${sig}. d de Cohen = ${rn(cohenD, 2)}.`,
+    summary: `Diferencia de medias (${a} − ${b}) = ${rn(diff, 2)}; ${activeName}: t = ${rn(activeT, 2)}, p = ${fp(activeP)} → diferencia ${sig}. d de Cohen = ${rn(cohenD, 2)}.${
+      assumptionFlags.length > 0
+        ? ` ⚠ Aviso: ${assumptionFlags.join("; ")} → alternativa no paramétrica U de Mann-Whitney p = ${fp(mw.pVal)}.`
+        : ""
+    }`,
   };
 }
 
-function runPairedTTest(rows: Record<string, Cell>[], params: Record<string, unknown>): Omit<AnalysisResult, "test"> {
+function runPairedTTest(
+  rows: Record<string, Cell>[],
+  params: Record<string, unknown>,
+  varMap?: VarMetaMap
+): Omit<AnalysisResult, "test"> {
   const v1 = params.var1 as string;
   const v2 = params.var2 as string;
   needCols(rows, [v1, v2]);
+  const s1 = getNumericSeries(rows, v1, varMap);
+  const s2 = getNumericSeries(rows, v2, varMap);
+  const isOrd = s1.isOrdinal || s2.isOrdinal;
   const x1: number[] = [];
   const x2: number[] = [];
-  for (const row of rows) {
-    const a = toNum(row[v1]);
-    const b = toNum(row[v2]);
+  for (let i = 0; i < rows.length; i++) {
+    const a = s1.values[i];
+    const b = s2.values[i];
     if (a !== null && b !== null) {
       x1.push(a);
       x2.push(b);
@@ -828,6 +953,7 @@ function runPairedTTest(rows: Record<string, Cell>[], params: Record<string, unk
   const t = se > 0 ? dMean / se : 0;
   const p = tPvalTwoSided(t, df);
   const tc = tCrit975(df);
+  const swDiff = shapiroWilkP(diffs);
 
   // Wilcoxon signed-rank
   const nonZero = diffs.filter((d) => d !== 0);
@@ -852,15 +978,22 @@ function runPairedTTest(rows: Record<string, Cell>[], params: Record<string, unk
     }
   }
 
+  const nonParamPreferred = isOrd || (Number.isFinite(swDiff) && swDiff < 0.05);
+  const swMsg = isOrd
+    ? "Al menos una variable es ordinal: priorizar Wilcoxon de rangos con signo."
+    : Number.isFinite(swDiff) && swDiff < 0.05
+      ? `⚠ Diferencias pareadas no normales (Shapiro-Wilk p = ${fp(swDiff)}): priorizar Wilcoxon (p = ${fp(wP)}).`
+      : `Normalidad de diferencias pareadas: Shapiro-Wilk p = ${fp(swDiff)}.`;
+
   return {
-    title: `T pareada: ${v1} vs ${v2}`,
+    title: nonParamPreferred ? `Wilcoxon / t pareada: ${v1} vs ${v2}` : `T pareada: ${v1} vs ${v2}`,
     tables: [
       {
         title: "Estadísticos",
-        columns: ["Variable", "N", "Media", "DE"],
+        columns: ["Variable", "N", "Media", "DE", "Mediana", "RIC (Q1–Q3)"],
         rows: [
-          [v1, n, rn(mean(x1), 2), rn(sd(x1), 2)],
-          [v2, n, rn(mean(x2), 2), rn(sd(x2), 2)],
+          [v1, n, rn(mean(x1), 2), rn(sd(x1), 2), rn(quantile([...x1].sort((a, b) => a - b), 0.5), 2), `${rn(quantile([...x1].sort((a, b) => a - b), 0.25), 2)} – ${rn(quantile([...x1].sort((a, b) => a - b), 0.75), 2)}`],
+          [v2, n, rn(mean(x2), 2), rn(sd(x2), 2), rn(quantile([...x2].sort((a, b) => a - b), 0.5), 2), `${rn(quantile([...x2].sort((a, b) => a - b), 0.25), 2)} – ${rn(quantile([...x2].sort((a, b) => a - b), 0.75), 2)}`],
         ],
         note: "",
       },
@@ -871,7 +1004,7 @@ function runPairedTTest(rows: Record<string, Cell>[], params: Record<string, unk
           ["t pareada", rn(t), df, fp(p), rn(dMean, 3), rn(dMean - tc * se, 3), rn(dMean + tc * se, 3)],
           ["Wilcoxon rangos con signo", rn(wStat, 1), null, fp(wP), null, null, null],
         ],
-        note: "",
+        note: swMsg,
       },
     ],
     charts: [
@@ -884,15 +1017,21 @@ function runPairedTTest(rows: Record<string, Cell>[], params: Record<string, unk
         meta: {},
       },
     ],
-    summary: `Diferencia media = ${rn(dMean, 2)}, t = ${rn(t, 2)}, p = ${fp(p)}.`,
+    summary: nonParamPreferred
+      ? `Wilcoxon rangos con signo W = ${rn(wStat, 1)}, p = ${fp(wP)} (t pareada ref.: t = ${rn(t, 2)}, p = ${fp(p)}). ${swMsg}`
+      : `Diferencia media = ${rn(dMean, 2)}, t = ${rn(t, 2)}, p = ${fp(p)} (Wilcoxon p = ${fp(wP)}).`,
   };
 }
 
-function runMannWhitney(rows: Record<string, Cell>[], params: Record<string, unknown>): Omit<AnalysisResult, "test"> {
+function runMannWhitney(
+  rows: Record<string, Cell>[],
+  params: Record<string, unknown>,
+  varMap?: VarMetaMap
+): Omit<AnalysisResult, "test"> {
   const yv = params.outcome as string;
   const gv = params.group as string;
   needCols(rows, [yv, gv]);
-  const yVals = rows.map((r) => toNum(r[yv]));
+  const { values: yVals, isOrdinal } = getNumericSeries(rows, yv, varMap);
   const gVals = rows.map((r) => toLbl(r[gv]));
   const levels = getLevels(gVals);
   if (levels.length !== 2) {
@@ -907,22 +1046,9 @@ function runMannWhitney(rows: Record<string, Cell>[], params: Record<string, unk
   }
   if (!xa.length || !xb.length) throw new StatsError("Cada grupo necesita al menos 1 observación.");
 
-  const all = [...xa, ...xb];
-  const { ranks, tieSum } = ranksWithTies(all);
-  const ra = ranks.slice(0, xa.length);
-  const rb = ranks.slice(xa.length);
-  const sumRa = ra.reduce((s, v) => s + v, 0);
   const na = xa.length;
   const nb = xb.length;
-  const u1 = sumRa - (na * (na + 1)) / 2;
-  const u2 = na * nb - u1;
-  const uStat = Math.min(u1, u2);
-  const muU = (na * nb) / 2;
-  const N = na + nb;
-  const varU = ((na * nb) / 12) * (N + 1 - tieSum / (N * (N - 1)));
-  const z = varU > 0 ? (Math.abs(u1 - muU) - 0.5) / Math.sqrt(varU) : 0;
-  const pVal = 2 * (1 - normCdf(Math.max(0, z)));
-  const rbc = 1 - (2 * u1) / (na * nb);
+  const { uStat, pVal, rbc, meanRa, meanRb } = mannWhitneyCore(xa, xb);
 
   const sa = [...xa].sort((x, y) => x - y);
   const sb = [...xb].sort((x, y) => x - y);
@@ -934,10 +1060,10 @@ function runMannWhitney(rows: Record<string, Cell>[], params: Record<string, unk
         title: "Medianas por grupo",
         columns: ["Grupo", "N", "Mediana", "RIC", "Rango medio"],
         rows: [
-          [a, na, rn(quantile(sa, 0.5), 2), `${rn(quantile(sa, 0.25), 2)} – ${rn(quantile(sa, 0.75), 2)}`, rn(mean(ra), 1)],
-          [b, nb, rn(quantile(sb, 0.5), 2), `${rn(quantile(sb, 0.25), 2)} – ${rn(quantile(sb, 0.75), 2)}`, rn(mean(rb), 1)],
+          [a, na, rn(quantile(sa, 0.5), 2), `${rn(quantile(sa, 0.25), 2)} – ${rn(quantile(sa, 0.75), 2)}`, rn(meanRa, 1)],
+          [b, nb, rn(quantile(sb, 0.5), 2), `${rn(quantile(sb, 0.25), 2)} – ${rn(quantile(sb, 0.75), 2)}`, rn(meanRb, 1)],
         ],
-        note: "",
+        note: isOrdinal ? `Variable ordinal «${yv}» evaluada mediante rangos ordenados.` : "",
       },
       {
         title: "Prueba",
@@ -947,7 +1073,7 @@ function runMannWhitney(rows: Record<string, Cell>[], params: Record<string, unk
       },
     ],
     charts: [buildBoxChart(yVals, gVals, `${yv} por ${gv}`)],
-    summary: `U = ${rn(uStat, 1)}, p = ${fp(pVal)}.`,
+    summary: `U = ${rn(uStat, 1)}, p = ${fp(pVal)}, r_rb = ${rn(rbc, 2)}.`,
   };
 }
 
@@ -1072,11 +1198,15 @@ function runChi2(rows: Record<string, Cell>[], params: Record<string, unknown>):
   };
 }
 
-function runAnova(rows: Record<string, Cell>[], params: Record<string, unknown>): Omit<AnalysisResult, "test"> {
+function runAnova(
+  rows: Record<string, Cell>[],
+  params: Record<string, unknown>,
+  varMap?: VarMetaMap
+): Omit<AnalysisResult, "test"> {
   const yv = params.outcome as string;
   const gv = params.group as string;
   needCols(rows, [yv, gv]);
-  const yVals = rows.map((r) => toNum(r[yv]));
+  const { values: yVals, isOrdinal } = getNumericSeries(rows, yv, varMap);
   const gVals = rows.map((r) => toLbl(r[gv]));
   const validLevels = getLevels(gVals.filter((_, i) => yVals[i] !== null));
   if (validLevels.length < 2) throw new StatsError("La variable de agrupación necesita al menos 2 categorías.");
@@ -1096,24 +1226,28 @@ function runAnova(rows: Record<string, Cell>[], params: Record<string, unknown>)
   const sst = all.reduce((s, v) => s + (v - grandMean) ** 2, 0);
   const ssw = sst - ssb;
   const msb = ssb / (k - 1);
-  const msw = ssw / (N - k);
+  const msw = N > k ? ssw / (N - k) : 0;
   const fStat = msw > 0 ? msb / msw : 0;
-  const fP = fPval(fStat, k - 1, N - k);
+  const fP = N > k ? fPval(fStat, k - 1, N - k) : 1;
   const eta2 = sst > 0 ? ssb / sst : NaN;
+  const omega2 = sst + msw > 0 ? Math.max(0, (ssb - (k - 1) * msw) / (sst + msw)) : NaN;
+
+  // Shapiro-Wilk per group
+  const nonNormalGroups = validLevels.filter((_, idx) => {
+    const g = groups[idx];
+    if (g.length < 3) return false;
+    const sw = shapiroWilkP(g);
+    return Number.isFinite(sw) && sw < 0.05;
+  });
 
   // Kruskal-Wallis H
-  const { ranks, tieSum } = ranksWithTies(all);
-  let offset = 0;
-  let kwSum = 0;
-  for (const g of groups) {
-    const rSum = ranks.slice(offset, offset + g.length).reduce((s, v) => s + v, 0);
-    kwSum += (rSum * rSum) / g.length;
-    offset += g.length;
-  }
-  const Hraw = (12 / (N * (N + 1))) * kwSum - 3 * (N + 1);
-  const tieCorr = 1 - tieSum / (N * N * N - N);
-  const H = tieCorr > 0 ? Hraw / tieCorr : Hraw;
-  const kwP = chi2Pval(H, k - 1);
+  const { H, pVal: kwP } = kruskalWallisCore(groups);
+  const nonParamPreferred = isOrdinal || nonNormalGroups.length > 0;
+  const assumptionNote = isOrdinal
+    ? ` ⚠ «${yv}» es una variable ordinal: prioriza el contraste no paramétrico de Kruskal-Wallis (H = ${rn(H)}, p = ${fp(kwP)}).`
+    : nonNormalGroups.length > 0
+      ? ` ⚠ Normalidad rechazada en ${nonNormalGroups.join(", ")} (Shapiro-Wilk p < 0.05): prioriza Kruskal-Wallis (H = ${rn(H)}, p = ${fp(kwP)}).`
+      : "";
 
   const tables: ResultTable[] = [
     {
@@ -1123,20 +1257,22 @@ function runAnova(rows: Record<string, Cell>[], params: Record<string, unknown>)
       note: "",
     },
     {
-      title: "ANOVA de un factor",
-      columns: ["Fuente", "SC", "gl", "MC", "F", "p"],
+      title: "ANOVA de un factor / Kruskal-Wallis",
+      columns: ["Fuente", "SC", "gl", "MC", "F / H", "p"],
       rows: [
-        ["Entre grupos", rn(ssb, 2), k - 1, rn(msb, 2), rn(fStat), fp(fP)],
+        ["Entre grupos (ANOVA)", rn(ssb, 2), k - 1, rn(msb, 2), rn(fStat), fp(fP)],
         ["Intra grupos", rn(ssw, 2), N - k, rn(msw, 2), null, null],
+        ["Kruskal-Wallis (no paramétrico)", null, k - 1, null, rn(H), fp(kwP)],
         ["Total", rn(sst, 2), N - 1, null, null, null],
       ],
-      note: `η² = ${rn(eta2)}. Kruskal-Wallis H = ${rn(H)}, p = ${fp(kwP)}.`,
+      note: `η² = ${rn(eta2)}, ω² = ${rn(omega2)}. Kruskal-Wallis H = ${rn(H)}, p = ${fp(kwP)}.${assumptionNote}`,
     },
   ];
 
-  if (k > 2) {
+  if (k > 2 && N > k) {
     const qCrit = tukeyCrit05(k, N - k);
     const tukeyRows: Cell[][] = [];
+    const mwPairs: { g1: string; g2: string; u: number; pRaw: number; rbc: number }[] = [];
     for (let i = 0; i < k; i++) {
       for (let j = i + 1; j < k; j++) {
         const md = mean(groups[j]) - mean(groups[i]);
@@ -1153,21 +1289,44 @@ function runAnova(rows: Record<string, Cell>[], params: Record<string, unknown>)
           rn(md + margin),
           pAdj < 0.05 ? "Sí" : "No",
         ]);
+        if (groups[i].length > 0 && groups[j].length > 0) {
+          const mwRes = mannWhitneyCore(groups[i], groups[j]);
+          mwPairs.push({ g1: validLevels[i], g2: validLevels[j], u: mwRes.uStat, pRaw: mwRes.pVal, rbc: mwRes.rbc });
+        }
       }
     }
     tables.push({
       title: "Post hoc: Tukey HSD",
       columns: ["Grupo 1", "Grupo 2", "Dif. media", "p ajustada", "IC inf", "IC sup", "Rechaza H0"],
       rows: tukeyRows,
-      note: "",
+      note: nonParamPreferred ? "Post hoc paramétrico de referencia (interpretar con cautela si los datos son ordinales o no normales)." : "",
     });
+    if (mwPairs.length > 0) {
+      const holmP = holmAdjust(mwPairs.map((m) => m.pRaw));
+      tables.push({
+        title: "Post hoc no paramétrico: Mann-Whitney pareado (corrección de Holm)",
+        columns: ["Grupo 1", "Grupo 2", "U", "p bruta", "p ajustada (Holm)", "r biserial", "Significativo"],
+        rows: mwPairs.map((m, idx) => [
+          m.g1,
+          m.g2,
+          rn(m.u, 1),
+          fp(m.pRaw),
+          fp(holmP[idx]),
+          rn(m.rbc, 3),
+          holmP[idx] < 0.05 ? "Sí" : "No",
+        ]),
+        note: "Recomendado tras Kruskal-Wallis o cuando existen variables ordinales / no normales.",
+      });
+    }
   }
 
   return {
-    title: `ANOVA: ${yv} según ${gv}`,
+    title: nonParamPreferred ? `Kruskal-Wallis / ANOVA: ${yv} según ${gv}` : `ANOVA: ${yv} según ${gv}`,
     tables,
     charts: [buildBoxChart(yVals, gVals, `${yv} por ${gv}`)],
-    summary: `F(${k - 1}, ${N - k}) = ${rn(fStat, 2)}, p = ${fp(fP)}, η² = ${rn(eta2, 3)}.`,
+    summary: nonParamPreferred
+      ? `Kruskal-Wallis H(${k - 1}) = ${rn(H, 2)}, p = ${fp(kwP)} (ANOVA ref.: F = ${rn(fStat, 2)}, p = ${fp(fP)}).${assumptionNote}`
+      : `F(${k - 1}, ${N - k}) = ${rn(fStat, 2)}, p = ${fp(fP)}, η² = ${rn(eta2, 3)}, ω² = ${rn(omega2, 3)} (Kruskal-Wallis p = ${fp(kwP)}).`,
   };
 }
 
@@ -1191,14 +1350,41 @@ function pearsonPair(x: number[], y: number[]): { r: number; p: number } {
   return { r: rVal, p: tPvalTwoSided(t, n - 2) };
 }
 
-function runCorrelation(rows: Record<string, Cell>[], params: Record<string, unknown>): Omit<AnalysisResult, "test"> {
+function runCorrelation(
+  rows: Record<string, Cell>[],
+  params: Record<string, unknown>,
+  varMap?: VarMetaMap
+): Omit<AnalysisResult, "test"> {
   const vars = (params.vars as string[]) || [];
-  const method = (params.method as string) === "spearman" ? "spearman" : "pearson";
-  if (vars.length < 2) throw new StatsError("Selecciona al menos 2 variables numéricas.");
+  const rawMethod = params.method as string;
+  const method = rawMethod === "spearman" ? "spearman" : rawMethod === "kendall" ? "kendall" : "pearson";
+  const methodLabel = method === "pearson" ? "Pearson" : method === "spearman" ? "Spearman" : "Kendall (τ-b)";
+  const sym = method === "pearson" ? "r" : method === "spearman" ? "ρ" : "τ";
+  if (vars.length < 2) throw new StatsError("Selecciona al menos 2 variables numéricas u ordinales.");
   needCols(rows, vars);
 
   const series: Record<string, (number | null)[]> = {};
-  for (const v of vars) series[v] = rows.map((r) => toNum(r[v]));
+  const ordinalVars: string[] = [];
+  const nonNormalVars: string[] = [];
+  for (const v of vars) {
+    const res = getNumericSeries(rows, v, varMap);
+    series[v] = res.values;
+    if (res.isOrdinal) ordinalVars.push(v);
+    else {
+      const valid = res.values.filter((n): n is number => n !== null);
+      if (valid.length >= 3) {
+        const sw = shapiroWilkP(valid);
+        if (Number.isFinite(sw) && sw < 0.05) nonNormalVars.push(v);
+      }
+    }
+  }
+
+  const calcPair = (x: number[], y: number[]): { r: number; p: number } => {
+    if (method === "pearson") return pearsonPair(x, y);
+    if (method === "spearman") return pearsonPair(ranksWithTies(x).ranks, ranksWithTies(y).ranks);
+    const kRes = kendallTauB(x, y);
+    return { r: kRes.tau, p: kRes.p };
+  };
 
   const matRows: Cell[][] = vars.map((v1) => {
     const row: Cell[] = [v1];
@@ -1219,10 +1405,7 @@ function runCorrelation(rows: Record<string, Cell>[], params: Record<string, unk
         row.push("—");
         continue;
       }
-      const res =
-        method === "pearson"
-          ? pearsonPair(x, y)
-          : pearsonPair(ranksWithTies(x).ranks, ranksWithTies(y).ranks);
+      const res = calcPair(x, y);
       row.push(`${rn(res.r)} (p=${fp(res.p)})`);
     }
     return row;
@@ -1258,10 +1441,7 @@ function runCorrelation(rows: Record<string, Cell>[], params: Record<string, unk
         heatmapData.push({ rowVar: v1, colVar: v2, r: null, p: null, n: x.length });
         continue;
       }
-      const res =
-        method === "pearson"
-          ? pearsonPair(x, y)
-          : pearsonPair(ranksWithTies(x).ranks, ranksWithTies(y).ranks);
+      const res = calcPair(x, y);
       heatmapData.push({
         rowVar: v1,
         colVar: v2,
@@ -1276,12 +1456,12 @@ function runCorrelation(rows: Record<string, Cell>[], params: Record<string, unk
   }
 
   const charts: ResultChart[] = [];
-  let summary = `Matriz de correlación (${method === "pearson" ? "Pearson" : "Spearman"}).`;
+  let summary = `Matriz de correlación (${methodLabel}).`;
 
   if (heatmapData.length > 0) {
     charts.push({
       type: "heatmap",
-      title: `Mapa de calor de correlación (${method === "pearson" ? "Pearson r" : "Spearman ρ"})`,
+      title: `Mapa de calor de correlación (${methodLabel} ${sym})`,
       x: "colVar",
       series: vars,
       data: heatmapData,
@@ -1298,7 +1478,7 @@ function runCorrelation(rows: Record<string, Cell>[], params: Record<string, unk
     const intercept = my - slope * mx;
     return {
       type: "scatter",
-      title: `${pair.v2} vs ${pair.v1} (${method === "pearson" ? "r" : "ρ"} = ${rn(pair.r, 3)}, p = ${fp(pair.p)})`,
+      title: `${pair.v2} vs ${pair.v1} (${sym} = ${rn(pair.r, 3)}, p = ${fp(pair.p)})`,
       x: "x",
       series: ["y"],
       data: pair.x.slice(0, 800).map((xi, idx) => ({ x: rn(xi), y: rn(pair.y[idx]) })),
@@ -1319,14 +1499,14 @@ function runCorrelation(rows: Record<string, Cell>[], params: Record<string, unk
     const pair = pairCandidates[0];
     charts.unshift(buildPairScatter(pair));
     let ciTxt = "";
-    if (pair.x.length >= 4 && Math.abs(pair.r) < 0.9999) {
+    if (method !== "kendall" && pair.x.length >= 4 && Math.abs(pair.r) < 0.9999) {
       const z = 0.5 * Math.log((1 + pair.r) / (1 - pair.r));
       const seZ = 1 / Math.sqrt(pair.x.length - 3);
       const lo = Math.tanh(z - 1.96 * seZ);
       const hi = Math.tanh(z + 1.96 * seZ);
       ciTxt = ` (IC 95%: ${rn(lo, 3)} – ${rn(hi, 3)})`;
     }
-    summary = `r = ${rn(pair.r, 3)}${ciTxt}, p = ${fp(pair.p)}, N = ${pair.x.length}.`;
+    summary = `${sym} = ${rn(pair.r, 3)}${ciTxt}, p = ${fp(pair.p)}, N = ${pair.x.length}.`;
   } else if (pairCandidates.length > 0) {
     const topPairs = [...pairCandidates].sort((a, b) => Math.abs(b.r) - Math.abs(a.r)).slice(0, 3);
     for (const pair of topPairs) {
@@ -1334,9 +1514,27 @@ function runCorrelation(rows: Record<string, Cell>[], params: Record<string, unk
     }
   }
 
+  const assumptionNotes: string[] = [];
+  if (method === "pearson") {
+    if (ordinalVars.length > 0) {
+      assumptionNotes.push(
+        `⚠ Variables ordinales detectadas (${ordinalVars.join(", ")}): Pearson asume escala de intervalo y normalidad; utiliza Spearman (ρ) o Kendall (τ-b).`
+      );
+    }
+    if (nonNormalVars.length > 0) {
+      assumptionNotes.push(
+        `⚠ Desviación de normalidad (Shapiro-Wilk p < 0.05) en ${nonNormalVars.join(", ")}: se recomienda ρ de Spearman o τ-b de Kendall.`
+      );
+    }
+  }
+  const corrNote = assumptionNotes.join(" ");
+  if (corrNote) {
+    summary += ` ${corrNote}`;
+  }
+
   return {
-    title: `Correlación de ${method === "pearson" ? "Pearson" : "Spearman"}`,
-    tables: [{ title: "Coeficientes de correlación", columns: ["", ...vars], rows: matRows, note: "" }],
+    title: `Correlación de ${methodLabel}`,
+    tables: [{ title: "Coeficientes de correlación", columns: ["", ...vars], rows: matRows, note: corrNote }],
     charts,
     summary,
   };
@@ -1367,23 +1565,85 @@ function runLinReg(
 
   const beta = matMulVec(inv, Xty);
   const yMean = mean(y);
+  const fitted: number[] = [];
+  const resids: number[] = [];
   let sse = 0;
   let sst = 0;
+  let absErr = 0;
   for (let i = 0; i < n; i++) {
     const yHat = X[i].reduce((s, v, j) => s + v * beta[j], 0);
-    sse += (y[i] - yHat) ** 2;
+    const r = y[i] - yHat;
+    fitted.push(yHat);
+    resids.push(r);
+    sse += r * r;
+    absErr += Math.abs(r);
     sst += (y[i] - yMean) ** 2;
   }
   const ssr = sst - sse;
   const dfModel = p - 1;
   const dfResid = n - p;
   const mse = sse / dfResid;
+  const rmse = Math.sqrt(sse / n);
+  const mae = absErr / n;
   const r2 = sst > 0 ? ssr / sst : 0;
   const adjR2 = 1 - ((1 - r2) * (n - 1)) / dfResid;
   const fStat = dfModel > 0 && mse > 0 ? ssr / dfModel / mse : 0;
   const fP = dfModel > 0 ? fPval(fStat, dfModel, dfResid) : 1;
   const aic = n * Math.log(sse / n) + 2 * p + n * (1 + Math.log(2 * Math.PI));
   const tc = tCrit975(dfResid);
+
+  // Residual diagnostics: Shapiro-Wilk, Durbin-Watson, Breusch-Pagan (auxiliary OLS on e^2)
+  const swResP = n >= 3 ? shapiroWilkP(resids) : NaN;
+  let dwNum = 0;
+  for (let i = 1; i < n; i++) dwNum += (resids[i] - resids[i - 1]) ** 2;
+  const dwStat = sse > 0 ? dwNum / sse : NaN;
+  let bpStat = NaN;
+  let bpP = NaN;
+  if (n > p + 2 && sse > 0) {
+    const sigma2 = sse / n;
+    const gVec = resids.map((r) => (r * r) / sigma2 - 1);
+    const Xtg = new Array(p).fill(0);
+    for (let i = 0; i < n; i++) for (let j = 0; j < p; j++) Xtg[j] += X[i][j] * gVec[i];
+    const bAux = matMulVec(inv, Xtg);
+    let ssAux = 0;
+    for (let i = 0; i < n; i++) {
+      const gHat = X[i].reduce((s, v, j) => s + v * bAux[j], 0);
+      ssAux += gHat * gHat;
+    }
+    bpStat = 0.5 * ssAux;
+    if (dfModel > 0) bpP = chi2Pval(bpStat, dfModel);
+  }
+
+  // 5-fold cross-validation
+  let cvR2: number | null = null;
+  let cvRmse: number | null = null;
+  if (n >= 15) {
+    const kFold = 5;
+    const oofPred = new Array(n).fill(NaN);
+    for (let fold = 0; fold < kFold; fold++) {
+      const trIdx: number[] = [];
+      const teIdx: number[] = [];
+      for (let i = 0; i < n; i++) (i % kFold === fold ? teIdx : trIdx).push(i);
+      const XtXcv: number[][] = Array.from({ length: p }, () => new Array(p).fill(0));
+      const Xtycv: number[] = new Array(p).fill(0);
+      for (const i of trIdx) {
+        for (let a = 0; a < p; a++) {
+          Xtycv[a] += X[i][a] * y[i];
+          for (let b = 0; b < p; b++) XtXcv[a][b] += X[i][a] * X[i][b];
+        }
+      }
+      const invCv = invertMatrix(XtXcv);
+      if (!invCv) continue;
+      const bCv = matMulVec(invCv, Xtycv);
+      for (const i of teIdx) oofPred[i] = X[i].reduce((s, v, j) => s + v * bCv[j], 0);
+    }
+    if (oofPred.every((v) => Number.isFinite(v))) {
+      let cvSse = 0;
+      for (let i = 0; i < n; i++) cvSse += (y[i] - oofPred[i]) ** 2;
+      cvRmse = Math.sqrt(cvSse / n);
+      cvR2 = sst > 0 ? 1 - cvSse / sst : 0;
+    }
+  }
 
   // Compute VIF for multiple predictors (p > 2)
   const vifs: (number | null)[] = new Array(p).fill(null);
@@ -1445,6 +1705,21 @@ function runLinReg(
       },
     });
   }
+  charts.push({
+    type: "scatter",
+    title: "Diagnóstico: Residuos vs Valores ajustados",
+    x: "x",
+    series: ["y"],
+    data: fitted.slice(0, 800).map((yh, i) => ({ x: rn(yh, 3), y: rn(resids[i], 3) })),
+    meta: {
+      slope: 0,
+      intercept: 0,
+      xlabel: "Valores ajustados (ŷ)",
+      ylabel: "Residuos (y − ŷ)",
+      xmin: rn(Math.min(...fitted), 3),
+      xmax: rn(Math.max(...fitted), 3),
+    },
+  });
 
   return {
     title: `Regresión lineal: ${outcome}`,
@@ -1461,9 +1736,15 @@ function runLinReg(
         rows: coefRowsWithVif,
         note: p > 2 ? "FIV (Factor de Inflación de la Varianza) > 5 sugiere colinealidad relevante." : "",
       },
+      {
+        title: "Diagnóstico de residuos y validación cruzada (5-fold)",
+        columns: ["RMSE", "MAE", "Shapiro-Wilk res. (p)", "Breusch-Pagan (p)", "Durbin-Watson", "R² CV (5-fold)", "RMSE CV"],
+        rows: [[rn(rmse, 3), rn(mae, 3), fp(swResP), fp(bpP), rn(dwStat, 2), cvR2 !== null ? rn(cvR2, 3) : "—", cvRmse !== null ? rn(cvRmse, 3) : "—"]],
+        note: "Breusch-Pagan p < 0.05 sugiere heterocedasticidad; Durbin-Watson ≈ 2 indica independencia de residuos.",
+      },
     ],
     charts,
-    summary: `R² = ${rn(r2, 3)} (ajustado ${rn(adjR2, 3)}), F = ${rn(fStat, 2)}, p = ${fp(fP)}, N = ${n}.`,
+    summary: `R² = ${rn(r2, 3)} (ajustado ${rn(adjR2, 3)}), RMSE = ${rn(rmse, 3)}, F = ${rn(fStat, 2)}, p = ${fp(fP)}, N = ${n}.`,
   };
 }
 
@@ -1532,9 +1813,82 @@ function runLogReg(
   const pNull = events / n;
   const llNull = events * Math.log(pNull) + (n - events) * Math.log(1 - pNull);
   const pseudoR2 = llNull !== 0 ? 1 - llModel / llNull : 0;
+  const coxSnell = 1 - Math.exp((2 / n) * (llNull - llModel));
+  const maxCoxSnell = 1 - Math.exp((2 / n) * llNull);
+  const nagelkerke = maxCoxSnell > 0 ? coxSnell / maxCoxSnell : 0;
+  const brier = probs.reduce((s, pr, i) => s + (y[i] - pr) ** 2, 0) / n;
   const aic = -2 * llModel + 2 * p;
   const lrStat = Math.max(0, 2 * (llModel - llNull));
   const lrP = p > 1 ? chi2Pval(lrStat, p - 1) : 1;
+
+  // Hosmer-Lemeshow calibration bins (up to 10)
+  const ordPairs = probs.map((pr, i) => ({ pr, y: y[i] })).sort((a, b) => a.pr - b.pr);
+  const gBins = Math.min(10, Math.max(2, Math.floor(n / 10)));
+  let hlChi2 = 0;
+  const calibPts: Record<string, Cell>[] = [];
+  for (let g = 0; g < gBins; g++) {
+    const start = Math.floor((g * n) / gBins);
+    const end = Math.floor(((g + 1) * n) / gBins);
+    const slice = ordPairs.slice(start, end);
+    if (!slice.length) continue;
+    const obsEv = slice.reduce((s, o) => s + o.y, 0);
+    const expEv = slice.reduce((s, o) => s + o.pr, 0);
+    const ng = slice.length;
+    const meanP = expEv / ng;
+    if (expEv > 0 && expEv < ng) {
+      hlChi2 += ((obsEv - expEv) ** 2) / (expEv * (1 - meanP));
+    }
+    calibPts.push({
+      pred: `${rn(meanP * 100, 1)}%`,
+      Modelo: rn((obsEv / ng) * 100, 1),
+      Ideal: rn(meanP * 100, 1),
+    });
+  }
+  const hlP = gBins > 2 ? chi2Pval(hlChi2, gBins - 2) : 1;
+
+  // 5-fold CV AUC
+  let cvAuc: number | null = null;
+  if (n >= 20 && events >= 5 && n - events >= 5) {
+    const kFold = 5;
+    const oof = new Array(n).fill(NaN);
+    for (let fold = 0; fold < kFold; fold++) {
+      const trIdx: number[] = [];
+      const teIdx: number[] = [];
+      for (let i = 0; i < n; i++) (i % kFold === fold ? teIdx : trIdx).push(i);
+      let bCv = new Array(p).fill(0);
+      let ok = true;
+      for (let iter = 0; iter < 30; iter++) {
+        const grad = new Array(p).fill(0);
+        const info: number[][] = Array.from({ length: p }, () => new Array(p).fill(0));
+        for (const i of trIdx) {
+          const eta = Math.max(-20, Math.min(20, X[i].reduce((s, v, j) => s + v * bCv[j], 0)));
+          const pi = 1 / (1 + Math.exp(-eta));
+          const w = Math.max(1e-8, pi * (1 - pi));
+          for (let j = 0; j < p; j++) {
+            grad[j] += X[i][j] * (y[i] - pi);
+            for (let k = 0; k < p; k++) info[j][k] += X[i][j] * X[i][k] * w;
+          }
+        }
+        const inv = invertMatrix(info);
+        if (!inv) { ok = false; break; }
+        const step = matMulVec(inv, grad);
+        bCv = bCv.map((b, j) => b + step[j]);
+        if (Math.max(...step.map((v) => Math.abs(v))) < 1e-6) break;
+      }
+      if (!ok) continue;
+      for (const i of teIdx) {
+        const eta = Math.max(-20, Math.min(20, X[i].reduce((s, v, j) => s + v * bCv[j], 0)));
+        oof[i] = 1 / (1 + Math.exp(-eta));
+      }
+    }
+    if (oof.every((v) => Number.isFinite(v))) {
+      const posCv = oof.filter((_, i) => y[i] === 1);
+      const negCv = oof.filter((_, i) => y[i] === 0);
+      let cSum = 0;
+      for (const pp of posCv) for (const np of negCv) cSum += pp > np ? 1 : pp === np ? 0.5 : 0;
+      cvAuc = posCv.length && negCv.length ? cSum / (posCv.length * negCv.length) : null;
+    }
+  }
 
   const coefRows: Cell[][] = [];
   const orChart: Record<string, Cell>[] = [];
@@ -1567,6 +1921,12 @@ function runLogReg(
         rows: coefRows,
         note: "",
       },
+      {
+        title: "Calibración y validación interna",
+        columns: ["R² Nagelkerke", "Brier Score", "Hosmer-Lemeshow χ²", "p (H-L)", "AUC CV (5-fold)"],
+        rows: [[rn(nagelkerke, 3), rn(brier, 4), rn(hlChi2, 2), fp(hlP), cvAuc !== null ? rn(cvAuc, 3) : "—"]],
+        note: "Hosmer-Lemeshow p > 0.05 indica buena calibración; menor Brier Score indica mejor calibración probabilística.",
+      },
     ],
     charts: [
       {
@@ -1577,8 +1937,20 @@ function runLogReg(
         data: orChart,
         meta: { refline: 1 },
       },
+      ...(calibPts.length >= 2
+        ? [
+            {
+              type: "line" as const,
+              title: "Curva de calibración (probabilidad predicha vs observada %)",
+              x: "pred",
+              series: ["Modelo", "Ideal"],
+              data: calibPts,
+              meta: {},
+            },
+          ]
+        : []),
     ],
-    summary: `Pseudo R² = ${rn(pseudoR2, 3)}, AUC = ${rn(aucModel, 3)}, p (razón de verosimilitud) = ${fp(lrP)}, N = ${n}.`,
+    summary: `Pseudo R² = ${rn(pseudoR2, 3)}, Nagelkerke = ${rn(nagelkerke, 3)}, AUC = ${rn(aucModel, 3)}, Brier = ${rn(brier, 4)}, p (razón de verosimilitud) = ${fp(lrP)}, N = ${n}.`,
   };
 }
 
@@ -1604,15 +1976,28 @@ function runKaplanMeier(rows: Record<string, Cell>[], params: Record<string, unk
 
   const levels = getLevels(obs.map((o) => o.g));
   const summaryRows: Cell[][] = [];
-  const curves: Record<string, Map<number, number>> = {};
+  const curves: Record<string, Map<number, { s: number; lo: number; hi: number }>> = {};
   const allTimes = new Set<number>([0]);
+
+  const greenwoodLogLogCi = (surv: number, cumVar: number): { lo: number; hi: number } => {
+    if (surv <= 0) return { lo: 0, hi: 0 };
+    if (surv >= 1 || cumVar <= 0) return { lo: 1, hi: 1 };
+    const absLnS = Math.abs(Math.log(surv));
+    if (absLnS < 1e-12) return { lo: 1, hi: 1 };
+    const seLnMinusLnS = Math.sqrt(cumVar) / absLnS;
+    const lo = Math.max(0, Math.min(1, Math.pow(surv, Math.exp(1.96 * seLnMinusLnS))));
+    const hi = Math.max(0, Math.min(1, Math.pow(surv, Math.exp(-1.96 * seLnMinusLnS))));
+    return { lo, hi };
+  };
 
   for (const lv of levels) {
     const sub = obs.filter((o) => o.g === lv).sort((a, b) => a.t - b.t);
     const times = Array.from(new Set(sub.map((o) => o.t))).sort((a, b) => a - b);
     let atRisk = sub.length;
     let surv = 1.0;
-    const curve = new Map<number, number>([[0, 1.0]]);
+    let cumVar = 0;
+    let lastCi = { lo: 1.0, hi: 1.0 };
+    const curve = new Map<number, { s: number; lo: number; hi: number }>([[0, { s: 1.0, lo: 1.0, hi: 1.0 }]]);
     let medTime: number | null = null;
     let totalEvents = 0;
 
@@ -1622,9 +2007,13 @@ function runKaplanMeier(rows: Record<string, Cell>[], params: Record<string, unk
       const d = atTime.filter((o) => o.e === 1).length;
       totalEvents += d;
       if (d > 0 && atRisk > 0) {
+        if (atRisk - d > 0) {
+          cumVar += d / (atRisk * (atRisk - d));
+        }
         surv *= 1 - d / atRisk;
       }
-      curve.set(ti, surv);
+      lastCi = greenwoodLogLogCi(surv, cumVar);
+      curve.set(ti, { s: surv, lo: lastCi.lo, hi: lastCi.hi });
       if (medTime === null && surv <= 0.5) medTime = ti;
       atRisk -= atTime.length;
     }
@@ -1635,16 +2024,21 @@ function runKaplanMeier(rows: Record<string, Cell>[], params: Record<string, unk
       totalEvents,
       medTime !== null ? rn(medTime, 2) : "No alcanzada",
       rn(100 * surv, 1),
+      `${rn(100 * lastCi.lo, 1)}% – ${rn(100 * lastCi.hi, 1)}%`,
     ]);
   }
 
   const sortedTimes = Array.from(allTimes).sort((a, b) => a - b);
-  const lastVal: Record<string, number> = Object.fromEntries(levels.map((lv) => [lv, 1.0]));
+  const lastVal: Record<string, { s: number; lo: number; hi: number }> = Object.fromEntries(
+    levels.map((lv) => [lv, { s: 1.0, lo: 1.0, hi: 1.0 }])
+  );
   const chartData = sortedTimes.map((tt) => {
     const pt: Record<string, Cell> = { t: rn(tt, 2) };
     for (const lv of levels) {
       if (curves[lv].has(tt)) lastVal[lv] = curves[lv].get(tt)!;
-      pt[lv] = rn(lastVal[lv], 4);
+      pt[lv] = rn(lastVal[lv].s, 4);
+      pt[`${lv}__ci_lo`] = rn(lastVal[lv].lo, 4);
+      pt[`${lv}__ci_hi`] = rn(lastVal[lv].hi, 4);
     }
     return pt;
   });
@@ -1652,9 +2046,9 @@ function runKaplanMeier(rows: Record<string, Cell>[], params: Record<string, unk
   const tables: ResultTable[] = [
     {
       title: "Resumen de supervivencia",
-      columns: ["Grupo", "N", "Eventos", "Mediana de supervivencia", "S(t) final %"],
+      columns: ["Grupo", "N", "Eventos", "Mediana de supervivencia", "S(t) final %", "IC 95% S(t) final"],
       rows: summaryRows,
-      note: "",
+      note: "Intervalos de confianza del 95% calculados mediante transformación log-log de Greenwood.",
     },
   ];
 
@@ -1708,7 +2102,19 @@ function runKaplanMeier(rows: Record<string, Cell>[], params: Record<string, unk
   return {
     title: `Kaplan-Meier: ${tv}${gv ? ` según ${gv}` : ""}`,
     tables,
-    charts: [{ type: "survival", title: "Curva de supervivencia", x: "t", series: levels, data: chartData, meta: {} }],
+    charts: [
+      {
+        type: "survival",
+        title: "Curva de supervivencia",
+        x: "t",
+        series: levels,
+        data: chartData,
+        meta: {
+          hasConfidenceIntervals: true,
+          ciMethod: "Greenwood log-log (95%)",
+        },
+      },
+    ],
     summary,
   };
 }
@@ -1716,7 +2122,8 @@ function runKaplanMeier(rows: Record<string, Cell>[], params: Record<string, unk
 function runTable1(
   rows: Record<string, Cell>[],
   params: Record<string, unknown>,
-  varTypes: Record<string, VarType>
+  varTypes: Record<string, VarType>,
+  varMap?: VarMetaMap
 ): Omit<AnalysisResult, "test"> {
   const gv = (params.group as string) || "";
   const vars = (params.vars as string[]) || [];
@@ -1733,44 +2140,96 @@ function runTable1(
   ];
 
   const tableRows: Cell[][] = [];
+  let usedParametric = false;
+  let usedNonParametric = false;
+
+  const formatMedianIqr = (arr: number[]) => {
+    if (!arr.length) return "—";
+    const s = [...arr].sort((a, b) => a - b);
+    return `${rn(quantile(s, 0.5), 1)} (${rn(quantile(s, 0.25), 1)}–${rn(quantile(s, 0.75), 1)})`;
+  };
 
   for (const v of vars) {
-    if (varTypes[v] === "numeric") {
-      const nums = rows.map((r) => toNum(r[v])).filter((n): n is number => n !== null);
-      const row: Cell[] = [`${v}, media ± DE`, nums.length ? `${rn(mean(nums), 1)} ± ${rn(sd(nums), 1)}` : "—"];
-      if (levels.length && gVals) {
-        const grpArrs = levels.map((lv) => {
-          const arr: number[] = [];
-          for (let i = 0; i < rows.length; i++) {
-            const val = toNum(rows[i][v]);
-            if (gVals[i] === lv && val !== null) arr.push(val);
-          }
-          return arr;
-        });
-        for (const arr of grpArrs) {
-          row.push(arr.length ? `${rn(mean(arr), 1)} ± ${rn(sd(arr), 1)}` : "—");
+    const vType = varTypes[v] ?? varMap?.get(v)?.type ?? "numeric";
+    if (vType === "numeric" || vType === "ordinal") {
+      const series = getNumericSeries(rows, v, varMap);
+      const nums = series.values.filter((n): n is number => n !== null);
+      const grpArrs = levels.map((lv) => {
+        const arr: number[] = [];
+        if (!gVals) return arr;
+        for (let i = 0; i < rows.length; i++) {
+          const val = series.values[i];
+          if (gVals[i] === lv && val !== null) arr.push(val);
         }
-        const ok = grpArrs.filter((a) => a.length > 1);
-        let pv: number | null = null;
-        if (ok.length === 2) {
-          const [a, b] = ok;
-          const va = variance(a);
-          const vb = variance(b);
-          const se = Math.sqrt(va / a.length + vb / b.length);
-          const df = (va / a.length + vb / b.length) ** 2 / ((va / a.length) ** 2 / (a.length - 1) + (vb / b.length) ** 2 / (b.length - 1));
-          pv = se > 0 ? tPvalTwoSided((mean(a) - mean(b)) / se, df) : 1;
-        } else if (ok.length > 2) {
-          const all = ok.flat();
-          const gm = mean(all);
-          const ssb = ok.reduce((s, g) => s + g.length * (mean(g) - gm) ** 2, 0);
-          const sst = all.reduce((s, x) => s + (x - gm) ** 2, 0);
-          const msb = ssb / (ok.length - 1);
-          const msw = (sst - ssb) / (all.length - ok.length);
-          pv = msw > 0 ? fPval(msb / msw, ok.length - 1, all.length - ok.length) : 1;
-        }
-        row.push(fp(pv));
+        return arr;
+      });
+
+      let nonNormal = vType === "ordinal";
+      if (!nonNormal && nums.length >= 3) {
+        const swAll = shapiroWilkP(nums);
+        if (Number.isFinite(swAll) && swAll < 0.05) nonNormal = true;
       }
-      tableRows.push(row);
+      if (!nonNormal && grpArrs.length >= 2) {
+        for (const ga of grpArrs) {
+          if (ga.length >= 3) {
+            const swG = shapiroWilkP(ga);
+            if (Number.isFinite(swG) && swG < 0.05) {
+              nonNormal = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (nonNormal) {
+        usedNonParametric = true;
+        const rowLabel = vType === "ordinal" ? `${v}, mediana (RIC) [ordinal]` : `${v}, mediana (RIC)`;
+        const row: Cell[] = [rowLabel, formatMedianIqr(nums)];
+        if (levels.length && gVals) {
+          for (const arr of grpArrs) {
+            row.push(formatMedianIqr(arr));
+          }
+          const ok = grpArrs.filter((a) => a.length > 0);
+          let pv: number | null = null;
+          if (ok.length === 2 && ok[0].length >= 1 && ok[1].length >= 1) {
+            pv = mannWhitneyCore(ok[0], ok[1]).pVal;
+          } else if (ok.length > 2) {
+            pv = kruskalWallisCore(ok).pVal;
+          }
+          row.push(fp(pv));
+        }
+        tableRows.push(row);
+      } else {
+        usedParametric = true;
+        const row: Cell[] = [`${v}, media ± DE`, nums.length ? `${rn(mean(nums), 1)} ± ${rn(sd(nums), 1)}` : "—"];
+        if (levels.length && gVals) {
+          for (const arr of grpArrs) {
+            row.push(arr.length ? `${rn(mean(arr), 1)} ± ${rn(sd(arr), 1)}` : "—");
+          }
+          const ok = grpArrs.filter((a) => a.length > 1);
+          let pv: number | null = null;
+          if (ok.length === 2) {
+            const [a, b] = ok;
+            const va = variance(a);
+            const vb = variance(b);
+            const se = Math.sqrt(va / a.length + vb / b.length);
+            const df =
+              (va / a.length + vb / b.length) ** 2 /
+              ((va / a.length) ** 2 / (a.length - 1) + (vb / b.length) ** 2 / (b.length - 1));
+            pv = se > 0 ? tPvalTwoSided((mean(a) - mean(b)) / se, df) : 1;
+          } else if (ok.length > 2) {
+            const all = ok.flat();
+            const gm = mean(all);
+            const ssb = ok.reduce((s, g) => s + g.length * (mean(g) - gm) ** 2, 0);
+            const sst = all.reduce((s, x) => s + (x - gm) ** 2, 0);
+            const msb = ssb / (ok.length - 1);
+            const msw = (sst - ssb) / (all.length - ok.length);
+            pv = msw > 0 ? fPval(msb / msw, ok.length - 1, all.length - ok.length) : 1;
+          }
+          row.push(fp(pv));
+        }
+        tableRows.push(row);
+      }
     } else {
       const cVals = rows.map((r) => toLbl(r[v]));
       const cLevels = getLevels(cVals);
@@ -1813,6 +2272,15 @@ function runTable1(
     }
   }
 
+  const noteParts: string[] = [];
+  if (usedParametric) noteParts.push("Continuas normales: media ± DE (t de Welch o ANOVA).");
+  if (usedNonParametric) {
+    noteParts.push(
+      "Ordinales o no normales (Shapiro-Wilk p < 0.05): mediana (RIC) con prueba U de Mann-Whitney o Kruskal-Wallis."
+    );
+  }
+  noteParts.push("Categóricas: n (%) con χ² de Pearson.");
+
   return {
     title: `Tabla 1: características basales${gv ? ` según ${gv}` : ""}`,
     tables: [
@@ -1820,11 +2288,13 @@ function runTable1(
         title: "Tabla 1",
         columns: cols,
         rows: tableRows,
-        note: "Continuas: t de Welch (2 grupos) o ANOVA; categóricas: χ² de Pearson.",
+        note: noteParts.join(" "),
       },
     ],
     charts: [],
-    summary: `Tabla 1 con ${vars.length} variables${gv ? ` estratificada por ${gv}.` : "."}`,
+    summary: `Tabla 1 con ${vars.length} variables${gv ? ` estratificada por ${gv}` : ""}${
+      usedNonParametric ? " (ajuste no paramétrico automático para ordinales/asimétricas)" : ""
+    }.`,
   };
 }
 
@@ -1933,6 +2403,10 @@ function runEpidemiology2x2(rows: Record<string, Cell>[], params: Record<string,
     m1 > 0 && m0 > 0 ? (N * Math.pow(a * d - b * c, 2)) / (n1 * n0 * m1 * m0) : 0;
   const pVal = chi2Pval(chi2, 1);
 
+  const rrr = Number.isFinite(rr) ? (1 - rr) * 100 : NaN;
+  const rrrLo = Number.isFinite(rrHi) ? (1 - rrHi) * 100 : NaN;
+  const rrrHi = Number.isFinite(rrLo) ? (1 - rrLo) * 100 : NaN;
+
   return {
     title: `Epidemiología 2×2: ${expCol} → ${outCol}`,
     tables: [
@@ -1957,10 +2431,15 @@ function runEpidemiology2x2(rows: Record<string, Cell>[], params: Record<string,
             `${rn(Math.abs(arr) * 100, 2)}%`,
             `${rn(arrLo * 100, 2)}% – ${rn(arrHi * 100, 2)}%`,
           ],
+          [
+            rr <= 1 ? "Reducción Relativa del Riesgo (RRR)" : "Aumento Relativo del Riesgo (RRI)",
+            Number.isFinite(rrr) ? `${rn(Math.abs(rrr), 1)}%` : "—",
+            Number.isFinite(rrrLo) ? `${rn(rrrLo, 1)}% – ${rn(rrrHi, 1)}%` : "—",
+          ],
           [nntLabel, nnt ?? "∞ (sin diferencia)", "—"],
           [feeLabel, `${rn(fee, 1)}%`, "—"],
         ],
-        note: "IC 95% de RR (Katz), OR (Woolf) y diferencia de riesgos (Wald).",
+        note: "IC 95% de RR (Katz), OR (Woolf), RRR = 1 − RR y diferencia de riesgos (Wald).",
       },
     ],
     charts: [
@@ -2024,6 +2503,22 @@ function runDiagnosticTest(rows: Record<string, Cell>[], params: Record<string, 
 
   const lrPos = spec < 1 ? sens / (1 - spec) : NaN;
   const lrNeg = spec > 0 ? (1 - sens) / spec : NaN;
+  const seLnLrPos = tp > 0 && fpCnt > 0 ? Math.sqrt(1 / tp - 1 / sick + 1 / fpCnt - 1 / healthy) : NaN;
+  const lrPosCI =
+    Number.isFinite(lrPos) && Number.isFinite(seLnLrPos)
+      ? `${rn(Math.exp(Math.log(lrPos) - 1.96 * seLnLrPos), 2)} – ${rn(Math.exp(Math.log(lrPos) + 1.96 * seLnLrPos), 2)}`
+      : "—";
+  const seLnLrNeg = fn > 0 && tn > 0 ? Math.sqrt(1 / fn - 1 / sick + 1 / tn - 1 / healthy) : NaN;
+  const lrNegCI =
+    Number.isFinite(lrNeg) && lrNeg > 0 && Number.isFinite(seLnLrNeg)
+      ? `${rn(Math.exp(Math.log(lrNeg) - 1.96 * seLnLrNeg), 3)} – ${rn(Math.exp(Math.log(lrNeg) + 1.96 * seLnLrNeg), 3)}`
+      : "—";
+  const dor = fpCnt > 0 && fn > 0 ? (tp * tn) / (fpCnt * fn) : NaN;
+  const seDor = tp > 0 && fpCnt > 0 && fn > 0 && tn > 0 ? Math.sqrt(1 / tp + 1 / fpCnt + 1 / fn + 1 / tn) : NaN;
+  const dorCI =
+    Number.isFinite(dor) && Number.isFinite(seDor)
+      ? `${rn(Math.exp(Math.log(dor) - 1.96 * seDor), 2)} – ${rn(Math.exp(Math.log(dor) + 1.96 * seDor), 2)}`
+      : "—";
   const youden = sens + spec - 1;
 
   return {
@@ -2040,7 +2535,7 @@ function runDiagnosticTest(rows: Record<string, Cell>[], params: Record<string, 
         note: `Prevalencia en la muestra: ${rn(prev * 100, 1)}% (${sick}/${N}).`,
       },
       {
-        title: "Rendimiento diagnóstico (IC 95% de Wilson)",
+        title: "Rendimiento diagnóstico (IC 95% Wilson / Simel)",
         columns: ["Métrica", "Valor", "IC 95%"],
         rows: [
           ["Sensibilidad", `${rn(sens * 100, 1)}%`, `${rn(sensCI[0] * 100, 1)}% – ${rn(sensCI[1] * 100, 1)}%`],
@@ -2048,11 +2543,12 @@ function runDiagnosticTest(rows: Record<string, Cell>[], params: Record<string, 
           ["Valor Predictivo Positivo (VPP)", `${rn(ppv * 100, 1)}%`, `${rn(ppvCI[0] * 100, 1)}% – ${rn(ppvCI[1] * 100, 1)}%`],
           ["Valor Predictivo Negativo (VPN)", `${rn(npv * 100, 1)}%`, `${rn(npvCI[0] * 100, 1)}% – ${rn(npvCI[1] * 100, 1)}%`],
           ["Exactitud global", `${rn(acc * 100, 1)}%`, `${rn(accCI[0] * 100, 1)}% – ${rn(accCI[1] * 100, 1)}%`],
-          ["Razón de verosimilitud positiva (LR+)", Number.isFinite(lrPos) ? rn(lrPos, 2) : "∞", "—"],
-          ["Razón de verosimilitud negativa (LR−)", Number.isFinite(lrNeg) ? rn(lrNeg, 3) : "—", "—"],
+          ["Razón de verosimilitud positiva (LR+)", Number.isFinite(lrPos) ? rn(lrPos, 2) : "∞", lrPosCI],
+          ["Razón de verosimilitud negativa (LR−)", Number.isFinite(lrNeg) ? rn(lrNeg, 3) : "—", lrNegCI],
+          ["Odds Ratio Diagnóstica (DOR)", Number.isFinite(dor) ? rn(dor, 2) : "∞", dorCI],
           ["Índice de Youden (J)", rn(youden, 3), "—"],
         ],
-        note: "LR+ > 10 aporta confirmación fuerte; LR− < 0.1 descarta fuertemente la enfermedad.",
+        note: "LR+ > 10 aporta confirmación fuerte; LR− < 0.1 descarta fuertemente la enfermedad (IC 95% LR por método de Simel).",
       },
     ],
     charts: [
@@ -2075,15 +2571,20 @@ function runDiagnosticTest(rows: Record<string, Cell>[], params: Record<string, 
   };
 }
 
-function runRocAuc(rows: Record<string, Cell>[], params: Record<string, unknown>): Omit<AnalysisResult, "test"> {
+function runRocAuc(
+  rows: Record<string, Cell>[],
+  params: Record<string, unknown>,
+  varMap?: VarMetaMap
+): Omit<AnalysisResult, "test"> {
   const markerCol = params.marker as string;
   const outCol = params.outcome as string;
   needCols(rows, [markerCol, outCol]);
 
   const outB = resolveBinaryColumn(rows, outCol);
+  const markerSeries = getNumericSeries(rows, markerCol, varMap);
   const pairs: { score: number; y: 0 | 1 }[] = [];
   for (let i = 0; i < rows.length; i++) {
-    const sc = toNum(rows[i][markerCol]);
+    const sc = markerSeries.values[i];
     const y = outB.values[i];
     if (sc !== null && y !== null) pairs.push({ score: sc, y });
   }
@@ -2364,14 +2865,21 @@ function runMcNemar(rows: Record<string, Cell>[], params: Record<string, unknown
   };
 }
 
-function runFriedman(rows: Record<string, Cell>[], params: Record<string, unknown>): Omit<AnalysisResult, "test"> {
+function runFriedman(
+  rows: Record<string, Cell>[],
+  params: Record<string, unknown>,
+  varMap?: VarMetaMap
+): Omit<AnalysisResult, "test"> {
   const vars = (params.vars as string[]) || [];
-  if (vars.length < 3) throw new StatsError("La prueba de Friedman requiere al menos 3 variables numéricas medidas en los mismos sujetos.");
+  if (vars.length < 3) {
+    throw new StatsError("La prueba de Friedman requiere al menos 3 variables numéricas u ordinales medidas en los mismos sujetos.");
+  }
   needCols(rows, vars);
 
+  const seriesByVar = vars.map((v) => getNumericSeries(rows, v, varMap).values);
   const complete: number[][] = [];
-  for (const r of rows) {
-    const vals = vars.map((v) => toNum(r[v]));
+  for (let i = 0; i < rows.length; i++) {
+    const vals = seriesByVar.map((s) => s[i]);
     if (vals.every((v) => v !== null)) complete.push(vals as number[]);
   }
   const N = complete.length;
@@ -2408,6 +2916,35 @@ function runFriedman(rows: Record<string, Cell>[], params: Record<string, unknow
 
   const boxData = vars.map((v, j) => boxStats(complete.map((subj) => subj[j]), v));
 
+  // Pairwise Wilcoxon signed-rank post-hoc with Holm adjustment
+  const pairPh: { v1: string; v2: string; w: number; pRaw: number }[] = [];
+  for (let a = 0; a < k; a++) {
+    for (let b = a + 1; b < k; b++) {
+      const diffs = complete.map((subj) => subj[b] - subj[a]).filter((d) => d !== 0);
+      let wStat = 0;
+      let pRaw = 1;
+      if (diffs.length > 0) {
+        const { ranks, tieSum } = ranksWithTies(diffs.map((d) => Math.abs(d)));
+        let wPlus = 0;
+        let wMinus = 0;
+        diffs.forEach((d, idx) => {
+          if (d > 0) wPlus += ranks[idx];
+          else wMinus += ranks[idx];
+        });
+        wStat = Math.min(wPlus, wMinus);
+        const m = diffs.length;
+        const meanW = (m * (m + 1)) / 4;
+        const varW = (m * (m + 1) * (2 * m + 1) - tieSum / 2) / 24;
+        if (varW > 0) {
+          const z = (Math.abs(wStat - meanW) - 0.5) / Math.sqrt(varW);
+          pRaw = 2 * (1 - normCdf(Math.max(0, z)));
+        }
+      }
+      pairPh.push({ v1: vars[a], v2: vars[b], w: wStat, pRaw });
+    }
+  }
+  const holmP = holmAdjust(pairPh.map((r) => r.pRaw));
+
   return {
     title: `ANOVA no paramétrico de Friedman (${vars.join(", ")})`,
     tables: [
@@ -2422,6 +2959,12 @@ function runFriedman(rows: Record<string, Cell>[], params: Record<string, unknow
         columns: ["N sujetos", "Condiciones (k)", "χ² de Friedman", "gl", "p", "W de Kendall"],
         rows: [[N, k, rn(chiF, 3), k - 1, fp(pVal), rn(kendallW, 3)]],
         note: "W de Kendall mide la concordancia / tamaño del efecto (0.1 pequeño, 0.3 moderado, ≥0.5 grande).",
+      },
+      {
+        title: "Post hoc pareado: Wilcoxon con corrección de Holm",
+        columns: ["Condición 1", "Condición 2", "W", "p bruta", "p ajustada (Holm)", "Significativo"],
+        rows: pairPh.map((r, idx) => [r.v1, r.v2, rn(r.w, 1), fp(r.pRaw), fp(holmP[idx]), holmP[idx] < 0.05 ? "Sí" : "No"]),
+        note: "Comparaciones pareadas no paramétricas ajustadas por multiplicidad (Holm).",
       },
     ],
     charts: [{ type: "box", title: "Comparación de medidas repetidas", data: boxData, x: "group", series: ["median"], meta: {} }],
@@ -2591,6 +3134,58 @@ function runCoxPh(
   }
   const cIndex = compPairs > 0 ? conc / compPairs : 0.5;
 
+  // Schoenfeld residuals proportional hazards test
+  const eventTimes: number[] = [];
+  const rawSch: number[][] = [];
+  let s0Sch = 0;
+  const s1Sch = new Array(p).fill(0);
+  let idxS = 0;
+  while (idxS < n) {
+    const currT = obs[idxS].t;
+    let jS = idxS;
+    while (jS < n && obs[jS].t === currT) {
+      const eta = Math.max(-20, Math.min(20, Xstd[jS].reduce((s, v, k) => s + v * betaStd[k], 0)));
+      const w = Math.exp(eta);
+      s0Sch += w;
+      for (let a = 0; a < p; a++) s1Sch[a] += w * Xstd[jS][a];
+      jS++;
+    }
+    for (let m = idxS; m < jS; m++) {
+      if (obs[m].e === 1 && s0Sch > 0) {
+        eventTimes.push(currT);
+        rawSch.push(Xstd[m].map((v, a) => v - s1Sch[a] / s0Sch));
+      }
+    }
+    idxS = jS;
+  }
+
+  const phRows: Cell[][] = [];
+  let globalPhChi2 = 0;
+  const phWarnings: string[] = [];
+  if (rawSch.length >= 4) {
+    const scaledSch = rawSch.map((rVec) => matMulVec(invInfoStd!, rVec).map((v) => v * rawSch.length));
+    const timeAscRanks = ranksWithTies(eventTimes.map((t) => t)).ranks;
+    const tRankNorm = timeAscRanks.map((rk) => rk / Math.max(1, eventTimes.length));
+    const tRankMean = mean(tRankNorm);
+    const tRankVar = tRankNorm.reduce((s, v) => s + (v - tRankMean) ** 2, 0);
+
+    for (let j = 0; j < p; j++) {
+      const rj = scaledSch.map((row) => row[j]);
+      const rjMean = mean(rj);
+      const rjVar = rj.reduce((s, v) => s + (v - rjMean) ** 2, 0);
+      let cov = 0;
+      for (let m = 0; m < rj.length; m++) cov += (tRankNorm[m] - tRankMean) * (rj[m] - rjMean);
+      const rho = tRankVar > 0 && rjVar > 0 ? cov / Math.sqrt(tRankVar * rjVar) : 0;
+      const chi1 = Math.max(0, (rj.length - 1) * rho * rho);
+      const pPh = chi2Pval(chi1, 1);
+      globalPhChi2 += chi1;
+      phRows.push([termNames[j], rn(rho, 3), rn(chi1, 3), 1, fp(pPh), pPh < 0.05 ? "Posible violación" : "Cumple"]);
+      if (pPh < 0.05) phWarnings.push(termNames[j]);
+    }
+    const globalPhP = chi2Pval(globalPhChi2, p);
+    phRows.push(["GLOBAL", "—", rn(globalPhChi2, 3), p, fp(globalPhP), globalPhP < 0.05 ? "Posible violación" : "Cumple"]);
+  }
+
   const coefRows: Cell[][] = [];
   const hrChart: Record<string, Cell>[] = [];
   termNames.forEach((name, j) => {
@@ -2603,6 +3198,10 @@ function runCoxPh(
     coefRows.push([name, rn(beta[j], 4), rn(se, 4), rn(z, 3), fp(pVal), rn(hr, 3), `${rn(lo, 3)} – ${rn(hi, 3)}`]);
     hrChart.push({ variable: name, HR: rn(hr, 3) });
   });
+
+  const phNote = phWarnings.length
+    ? `⚠ Residuos de Schoenfeld p < 0.05 en: ${phWarnings.join(", ")} (revisar supuesto de riesgos proporcionales).`
+    : "Supuesto de riesgos proporcionales verificado sin desviaciones significativas (p ≥ 0.05).";
 
   return {
     title: `Regresión de riesgos proporcionales de Cox: ${tv} (${ev})`,
@@ -2619,6 +3218,16 @@ function runCoxPh(
         rows: coefRows,
         note: "HR > 1 indica mayor riesgo instantáneo del evento; HR < 1 indica efecto protector.",
       },
+      ...(phRows.length
+        ? [
+            {
+              title: "Diagnóstico de riesgos proporcionales (Residuos de Schoenfeld)",
+              columns: ["Covariable", "ρ (con rango tiempo)", "χ²", "gl", "p", "Supuesto PH"],
+              rows: phRows,
+              note: phNote,
+            },
+          ]
+        : []),
     ],
     charts: [
       {
@@ -2630,7 +3239,7 @@ function runCoxPh(
         meta: { refline: 1 },
       },
     ],
-    summary: `Modelo de Cox (N=${n}, ${totalEvents} eventos): C-index = ${rn(cIndex, 3)}, χ² = ${rn(lrStat, 2)}, p global = ${fp(lrP)}.`,
+    summary: `Modelo de Cox (N=${n}, ${totalEvents} eventos): C-index = ${rn(cIndex, 3)}, χ² = ${rn(lrStat, 2)}, p global = ${fp(lrP)}.${phWarnings.length ? ` ${phNote}` : ""}`,
   };
 }
 
@@ -2678,13 +3287,21 @@ function runPoissonReg(
   let llModel = 0;
   let llNull = 0;
   let deviance = 0;
+  let pearsonChi2 = 0;
   for (let i = 0; i < n; i++) {
     const eta = Math.max(-15, Math.min(15, X[i].reduce((s, v, j) => s + v * beta[j], 0)));
     const mu = Math.exp(eta);
     llModel += y[i] * eta - mu - logGamma(y[i] + 1);
     llNull += y[i] * Math.log(yMean) - yMean - logGamma(y[i] + 1);
     deviance += 2 * (y[i] > 0 ? y[i] * Math.log(y[i] / mu) - (y[i] - mu) : mu);
+    pearsonChi2 += mu > 0 ? ((y[i] - mu) ** 2) / mu : 0;
   }
+  const dfResid = Math.max(1, n - p);
+  const phiDisp = pearsonChi2 / dfResid;
+  const dispWarn =
+    phiDisp > 1.5
+      ? ` ⚠ Sobredispersión detectada (φ = χ² Pearson/gl = ${rn(phiDisp, 2)} > 1.5): considera usar Regresión Binomial Negativa (negbin_reg).`
+      : ` Dispersión Pearson φ = ${rn(phiDisp, 2)} (adecuada para Poisson).`;
   const pseudoR2 = llNull !== 0 ? 1 - llModel / llNull : 0;
   const aic = -2 * llModel + 2 * p;
   const lrStat = Math.max(0, 2 * (llModel - llNull));
@@ -2710,7 +3327,7 @@ function runPoissonReg(
         title: "Resumen del modelo",
         columns: ["N", "Devianza", "Pseudo R²", "AIC", "p (LR)"],
         rows: [[n, rn(deviance, 2), rn(pseudoR2, 3), rn(aic, 1), fp(lrP)]],
-        note: "",
+        note: dispWarn.trim(),
       },
       {
         title: "Coeficientes (Razones de Tasas de Incidencia · IRR)",
@@ -2729,132 +3346,40 @@ function runPoissonReg(
         meta: { refline: 1 },
       },
     ],
-    summary: `Pseudo R² = ${rn(pseudoR2, 3)}, Devianza = ${rn(deviance, 1)}, p (LR) = ${fp(lrP)}, N = ${n}.`,
+    summary: `Pseudo R² = ${rn(pseudoR2, 3)}, Devianza = ${rn(deviance, 1)}, φ = ${rn(phiDisp, 2)}, p (LR) = ${fp(lrP)}, N = ${n}.${phiDisp > 1.5 ? dispWarn : ""}`,
   };
 }
 
-function runSampleSize(params: Record<string, unknown>): Omit<AnalysisResult, "test"> {
-  const design = (params.design as string) || "two_proportions";
-  const alpha = Math.min(0.2, Math.max(0.001, Number(params.alpha ?? 0.05)));
-  const power = Math.min(0.99, Math.max(0.5, Number(params.power ?? 0.8)));
-  const ratio = Math.min(5, Math.max(0.2, Number(params.ratio ?? 1)));
-
-  const zAlpha = normInv(1 - alpha / 2);
-  const calcPower = (n1Val: number): number => {
-    if (design === "two_means") {
-      const diff = Math.abs(Number(params.diff ?? 10));
-      const sigma = Math.max(1e-6, Number(params.sd_val ?? 15));
-      const n2Val = n1Val * ratio;
-      const se = sigma * Math.sqrt(1 / n1Val + 1 / n2Val);
-      return se > 0 ? normCdf(diff / se - zAlpha) : 0;
-    }
-    if (design === "correlation") {
-      const r = Math.min(0.99, Math.max(0.05, Math.abs(Number(params.r_val ?? 0.3))));
-      const zr = 0.5 * Math.log((1 + r) / (1 - r));
-      return n1Val > 3 ? normCdf(zr * Math.sqrt(n1Val - 3) - zAlpha) : 0;
-    }
-    const p1 = Math.min(0.99, Math.max(0.01, Number(params.p1 ?? 0.3)));
-    const p2 = Math.min(0.99, Math.max(0.01, Number(params.p2 ?? 0.15)));
-    const n2Val = n1Val * ratio;
-    const pBar = (p1 + ratio * p2) / (1 + ratio);
-    const se0 = Math.sqrt(pBar * (1 - pBar) * (1 / n1Val + 1 / n2Val));
-    const se1 = Math.sqrt((p1 * (1 - p1)) / n1Val + (p2 * (1 - p2)) / n2Val);
-    return se1 > 0 ? normCdf((Math.abs(p1 - p2) - zAlpha * se0) / se1) : 0;
-  };
-
-  let n1 = 10;
-  let n2 = 10;
-  let descLabel = "";
-
-  const zBeta = normInv(power);
-  if (design === "two_means") {
-    const diff = Math.abs(Number(params.diff ?? 10));
-    const sigma = Math.max(1e-6, Number(params.sd_val ?? 15));
-    if (diff <= 0) throw new StatsError("La diferencia mínima esperada entre medias debe ser > 0.");
-    n1 = Math.ceil(((1 + 1 / ratio) * Math.pow((zAlpha + zBeta) * (sigma / diff), 2)));
-    n2 = Math.ceil(n1 * ratio);
-    descLabel = `Comparación de 2 medias independientes (Δ = ${diff}, DE = ${sigma})`;
-  } else if (design === "correlation") {
-    const r = Math.min(0.99, Math.max(0.05, Math.abs(Number(params.r_val ?? 0.3))));
-    const zr = 0.5 * Math.log((1 + r) / (1 - r));
-    n1 = Math.ceil(Math.pow((zAlpha + zBeta) / zr, 2) + 3);
-    n2 = 0;
-    descLabel = `Estudio de correlación lineal (r esperado = ${r})`;
-  } else {
-    const p1 = Math.min(0.99, Math.max(0.01, Number(params.p1 ?? 0.3)));
-    const p2 = Math.min(0.99, Math.max(0.01, Number(params.p2 ?? 0.15)));
-    if (Math.abs(p1 - p2) < 0.005) throw new StatsError("Las proporciones p1 y p2 deben ser distintas.");
-    const pBar = (p1 + ratio * p2) / (1 + ratio);
-    const num =
-      zAlpha * Math.sqrt((1 + 1 / ratio) * pBar * (1 - pBar)) +
-      zBeta * Math.sqrt(p1 * (1 - p1) + (p2 * (1 - p2)) / ratio);
-    n1 = Math.ceil(Math.pow(num / Math.abs(p1 - p2), 2));
-    n2 = Math.ceil(n1 * ratio);
-    descLabel = `Comparación de 2 proporciones (p₁ = ${rn(p1 * 100, 1)}% vs p₂ = ${rn(p2 * 100, 1)}%)`;
-  }
-
-  const nTotal = n1 + n2;
-  const nTotal15 = Math.ceil(nTotal / 0.85);
-
-  const curvePts: Record<string, Cell>[] = [];
-  const maxN1 = Math.max(20, Math.ceil(n1 * 1.6));
-  const step = Math.max(1, Math.floor(maxN1 / 12));
-  for (let k = Math.max(5, step); k <= maxN1; k += step) {
-    const tot = design === "correlation" ? k : Math.ceil(k * (1 + ratio));
-    curvePts.push({ N: `N=${tot}`, "Potencia (%)": rn(calcPower(k) * 100, 1) });
-  }
-
-  return {
-    title: "Cálculo de tamaño muestral y potencia estadística",
-    tables: [
-      {
-        title: descLabel,
-        columns: ["Parámetro", "Valor"],
-        rows: [
-          ["Nivel de significación (α bilateral)", alpha],
-          ["Potencia estadística (1 − β)", `${rn(power * 100, 0)}%`],
-          [design === "correlation" ? "Sujetos requeridos (N)" : "Grupo 1 (n₁)", n1],
-          ...(design === "correlation" ? [] : [["Grupo 2 (n₂)", n2]]),
-          ["Tamaño muestral total requerido (N)", nTotal],
-          ["Ajustado por 15% de pérdidas en seguimiento", nTotal15],
-        ],
-        note: "Fórmula bilateral estándar (Kelsey / Fleiss / Fisher-z según diseño).",
-      },
-    ],
-    charts: [
-      {
-        type: "bar",
-        title: "Curva de potencia alcanzada según tamaño muestral",
-        x: "N",
-        series: ["Potencia (%)"],
-        data: curvePts,
-        meta: {},
-      },
-    ],
-    summary: `Tamaño muestral necesario: N = ${nTotal}${design === "correlation" ? "" : ` (n₁=${n1}, n₂=${n2})`} para α=${alpha} y potencia ${rn(power * 100, 0)}% (${nTotal15} considerando 15% de pérdidas).`,
-  };
-}
-
-export const TEST_DOCS = `- descriptives: {"vars": [..]}
+export const TEST_DOCS = `- descriptives: {"vars": [numéricas u ordinales / categóricas]}
 - frequencies: {"var": ".."}
-- table1: {"group": categórica opcional, "vars": [..]}
-- ttest (2 grupos independientes): {"outcome": numérica, "group": categórica 2 niveles}
-- paired_ttest: {"var1": numérica, "var2": numérica}
-- mannwhitney: {"outcome": numérica, "group": categórica 2 niveles}
-- anova: {"outcome": numérica, "group": categórica}
-- friedman (≥3 medidas repetidas numéricas): {"vars": [num1, num2, num3]}
-- chi2: {"row": categórica, "col": categórica} (incluye OR si 2x2)
+- table1: {"group": categórica opcional, "vars": [..]} (adapta automáticamente a mediana/RIC y Mann-Whitney/Kruskal si es ordinal o Shapiro-Wilk p < 0.05)
+- outlier_detection: {"vars": [numéricas], "z_threshold": 3.0 opcional} (IQR 1.5x, |z| modificado MAD y Tukey)
+- missing_analysis: {"vars": [opcionales]} (valores perdidos por variable, completitud de casos y patrón de ausencia)
+- ttest (2 grupos independientes, solo numérica normal): {"outcome": numérica, "group": categórica 2 niveles}
+- paired_ttest (incluye Wilcoxon no paramétrico): {"var1": numérica u ordinal, "var2": numérica u ordinal}
+- mannwhitney (no paramétrica recomendada para ordinales o no normales): {"outcome": numérica u ordinal, "group": categórica 2 niveles}
+- anova (incluye Kruskal-Wallis H + post-hoc Holm para ordinales o no normales): {"outcome": numérica u ordinal, "group": categórica}
+- rm_anova (ANOVA medidas repetidas intra-sujeto + Greenhouse-Geisser + Holm): {"vars": [m1, m2, m3]}
+- friedman (≥3 medidas repetidas no paramétricas + post-hoc Wilcoxon-Holm): {"vars": [var1, var2, var3]}
+- chi2: {"row": categórica/ordinal, "col": categórica/ordinal} (incluye OR si 2x2)
 - mcnemar (medidas binarias pareadas): {"var1": binaria, "var2": binaria}
-- epidemiology_2x2 (RR, OR, RAR, NNT/NNH): {"exposure": binaria, "outcome": binaria}
-- kappa_agreement (concordancia κ de Cohen): {"var1": categórica, "var2": categórica}
-- diagnostic_test (Sensibilidad, Especificidad, VPP, VPN, LR): {"test_var": binaria, "gold_standard": binaria}
-- roc_auc (Curva ROC, AUC y corte óptimo Youden): {"marker": numérica, "outcome": binaria}
-- correlation: {"vars": [numéricas], "method": "pearson"|"spearman"}
-- linreg: {"outcome": numérica, "predictors": [..]}
-- logreg: {"outcome": binaria, "predictors": [..]}
-- poisson_reg (conteos/tasas IRR): {"outcome": numérica_conteo, "predictors": [..]}
-- kaplan_meier: {"time": numérica, "event": 0/1, "group": categórica opcional}
-- cox_ph (regresión de Cox multivariable HR): {"time": numérica, "event": 0/1, "predictors": [..]}`;
+- epidemiology_2x2 (RR, OR, RAR, RRR, NNT/NNH): {"exposure": binaria, "outcome": binaria}
+- incidence_prevalence (prevalencia/incidencia acumulada con IC 95% Wilson y tasa por persona-tiempo): {"event": binaria, "time": numérica opcional, "group": categórica opcional}
+- kappa_agreement (concordancia κ de Cohen): {"var1": categórica/ordinal, "var2": categórica/ordinal}
+- icc (Coeficiente de Correlación Intraclase para ≥2 evaluadores/medidas numéricas): {"vars": [m1, m2, ...], "icc_type": "ICC2_1"|"ICC3_1"|"ICC2_k"}
+- diagnostic_test (Sensibilidad, Especificidad, VPP, VPN, LR+ / LR− con IC 95%): {"test_var": binaria, "gold_standard": binaria}
+- roc_auc (Curva ROC, AUC y corte óptimo Youden): {"marker": numérica u ordinal, "outcome": binaria}
+- correlation: {"vars": [numéricas u ordinales], "method": "pearson"|"spearman"|"kendall"}
+- linreg (diagnóstico de residuos + CV 5-fold): {"outcome": numérica, "predictors": [..]}
+- logreg (calibración Hosmer-Lemeshow, Brier, CV 5-fold): {"outcome": binaria, "predictors": [..]}
+- poisson_reg (conteos/tasas IRR + chequeo sobredispersión): {"outcome": numérica_conteo, "predictors": [..]}
+- negbin_reg (conteos sobredispersos IRR + θ): {"outcome": numérica_conteo, "predictors": [..]}
+- kaplan_meier (con IC 95% Greenwood log-log): {"time": numérica, "event": 0/1, "group": categórica opcional}
+- cox_ph (regresión de Cox multivariable HR + residuos Schoenfeld PH): {"time": numérica, "event": 0/1, "predictors": [..]}
+- sample_size (tamaño muestral y cálculo de potencia): {"calc_mode": "sample_size"|"power", "design": "two_proportions"|"two_means"|"correlation"|"cohort_rr", ...}
+- multiple_testing (corrección Benjamini-Hochberg FDR, Holm, Bonferroni): {"mode": "screen"|"pvalues", "outcome": ..., "predictors": [...], "method": "fdr_bh"|"holm"|"bonferroni"}
+- ts_trend_seasonal (tendencia Mann-Kendall, Sen, descomposición estacional): {"outcome": numérica, "time": opcional, "period": entero}
+- ts_arima (ACF, Ljung-Box, ADF, ARIMA(p,d,q) y pronóstico): {"outcome": numérica, "time": opcional, "p": 1, "d": 1, "q": 0, "forecast_steps": 6, "auto_order": true|false}`;
 
 export function runStatTest(
   test: TestName,
@@ -2863,36 +3388,59 @@ export function runStatTest(
   params: Record<string, unknown>
 ): AnalysisResult {
   if (test === "sample_size") {
-    return { test, ...runSampleSize(params) };
+    return { test, ...runSampleSizeAdv(params) };
+  }
+  if (test === "multiple_testing" && params.mode === "pvalues") {
+    const varMapEmpty: VarMetaMap = new Map(variables.map((v) => [v.name, v]));
+    return {
+      test,
+      ...runMultipleTesting(
+        rows,
+        params,
+        varMapEmpty,
+        (xa, xb) => mannWhitneyCore(xa, xb).pVal,
+        (groups) => kruskalWallisCore(groups).pVal
+      ),
+    };
   }
   if (!rows.length) throw new StatsError("La base de datos no tiene registros.");
   const varTypes: Record<string, VarType> = Object.fromEntries(variables.map((v) => [v.name, v.type]));
+  const varMap: VarMetaMap = new Map(variables.map((v) => [v.name, v]));
 
   let res: Omit<AnalysisResult, "test">;
   switch (test) {
     case "descriptives":
-      res = runDescriptives(rows, params);
+      res = runDescriptives(rows, params, varMap);
       break;
     case "frequencies":
       res = runFrequencies(rows, params);
       break;
+    case "outlier_detection":
+      res = runOutlierDetection(rows, params, varMap);
+      break;
+    case "missing_analysis":
+      res = runMissingAnalysis(rows, params, varMap);
+      break;
     case "ttest":
-      res = runTTest(rows, params);
+      res = runTTest(rows, params, varMap);
       break;
     case "paired_ttest":
-      res = runPairedTTest(rows, params);
+      res = runPairedTTest(rows, params, varMap);
       break;
     case "mannwhitney":
-      res = runMannWhitney(rows, params);
+      res = runMannWhitney(rows, params, varMap);
       break;
     case "chi2":
       res = runChi2(rows, params);
       break;
     case "anova":
-      res = runAnova(rows, params);
+      res = runAnova(rows, params, varMap);
+      break;
+    case "rm_anova":
+      res = runRmAnova(rows, params, varMap);
       break;
     case "correlation":
-      res = runCorrelation(rows, params);
+      res = runCorrelation(rows, params, varMap);
       break;
     case "linreg":
       res = runLinReg(rows, params, varTypes);
@@ -2904,10 +3452,10 @@ export function runStatTest(
       res = runKaplanMeier(rows, params);
       break;
     case "table1":
-      res = runTable1(rows, params, varTypes);
+      res = runTable1(rows, params, varTypes, varMap);
       break;
     case "friedman":
-      res = runFriedman(rows, params);
+      res = runFriedman(rows, params, varMap);
       break;
     case "mcnemar":
       res = runMcNemar(rows, params);
@@ -2915,20 +3463,44 @@ export function runStatTest(
     case "epidemiology_2x2":
       res = runEpidemiology2x2(rows, params);
       break;
+    case "incidence_prevalence":
+      res = runIncidencePrevalence(rows, params);
+      break;
     case "diagnostic_test":
       res = runDiagnosticTest(rows, params);
       break;
     case "roc_auc":
-      res = runRocAuc(rows, params);
+      res = runRocAuc(rows, params, varMap);
       break;
     case "kappa_agreement":
       res = runKappaAgreement(rows, params);
+      break;
+    case "icc":
+      res = runIcc(rows, params, varMap);
       break;
     case "cox_ph":
       res = runCoxPh(rows, params, varTypes);
       break;
     case "poisson_reg":
       res = runPoissonReg(rows, params, varTypes);
+      break;
+    case "negbin_reg":
+      res = runNegBinReg(rows, params, varTypes);
+      break;
+    case "multiple_testing":
+      res = runMultipleTesting(
+        rows,
+        params,
+        varMap,
+        (xa, xb) => mannWhitneyCore(xa, xb).pVal,
+        (groups) => kruskalWallisCore(groups).pVal
+      );
+      break;
+    case "ts_trend_seasonal":
+      res = runTsTrendSeasonal(rows, params);
+      break;
+    case "ts_arima":
+      res = runTsArima(rows, params);
       break;
     default:
       throw new StatsError(`Prueba desconocida: ${String(test)}`);

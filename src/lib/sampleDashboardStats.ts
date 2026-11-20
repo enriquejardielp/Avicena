@@ -117,7 +117,17 @@ export function computeCategoricalSummary(
     }
   }
 
-  const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  const sorted =
+    variable.type === "ordinal" && variable.levels.length > 0
+      ? Array.from(counts.entries()).sort((a, b) => {
+          const ia = variable.levels.indexOf(a[0]);
+          const ib = variable.levels.indexOf(b[0]);
+          if (ia !== -1 && ib !== -1) return ia - ib;
+          if (ia !== -1) return -1;
+          if (ib !== -1) return 1;
+          return a[0].localeCompare(b[0], "es");
+        })
+      : Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
   let slices: CategorySlice[];
   if (sorted.length > maxSlices) {
     const head = sorted.slice(0, maxSlices - 1);

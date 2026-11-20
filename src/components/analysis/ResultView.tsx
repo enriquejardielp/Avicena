@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Check, Copy, MessageSquare } from "lucide-react";
+import { AlertTriangle, BookOpen, Check, Copy, Download, FileCode2, MessageSquare, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
-import { copyAnalysisToClipboard, copySingleTableToClipboard } from "../../lib/clipboardExport.ts";
+import { copyAnalysisToClipboard, copyMarkdownToClipboard, copySingleTableToClipboard } from "../../lib/clipboardExport.ts";
 import type { AnalysisResult, Cell } from "../../lib/types.ts";
 import { StatChart } from "../charts/StatChart.tsx";
 
@@ -20,12 +20,19 @@ function isNumericCell(v: Cell): boolean {
 interface ResultViewProps {
   result: AnalysisResult;
   compact?: boolean;
+  showHistoricNotice?: boolean;
   onAskCopilot?: (summaryPrompt: string) => void;
 }
 
-export function ResultView({ result, compact = false, onAskCopilot }: ResultViewProps) {
+export function ResultView({ result, compact = false, showHistoricNotice = false, onAskCopilot }: ResultViewProps) {
   const [copiedAll, setCopiedAll] = useState(false);
   const [copiedTableIdx, setCopiedTableIdx] = useState<number | null>(null);
+  const [copiedCitations, setCopiedCitations] = useState(false);
+
+  const assumptionWarnings = [
+    ...(result.summary.includes("⚠") ? [result.summary.slice(result.summary.indexOf("⚠"))] : []),
+    ...(result.tables ?? []).map((t) => t.note).filter((n) => n && n.includes("⚠")),
+  ];
 
   const handleCopyAll = async () => {
     try {
@@ -88,6 +95,127 @@ export function ResultView({ result, compact = false, onAskCopilot }: ResultView
             )}
           </div>
         </div>
+
+        {assumptionWarnings.length > 0 && (
+          <div
+            data-testid="result-assumption-alert"
+            className="mt-3 flex items-start gap-2.5 rounded-xl border border-amber-300/80 bg-amber-50/90 px-3.5 py-2.5 text-xs text-amber-950 dark:border-amber-500/35 dark:bg-amber-500/10 dark:text-amber-200"
+          >
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+            <div className="space-y-0.5">
+              <div className="font-semibold">Advertencia sobre supuestos paramétricos</div>
+              <p className="leading-relaxed">{assumptionWarnings[0]}</p>
+            </div>
+          </div>
+        )}
+
+        {result.provenance ? (
+          <div
+            data-testid="result-provenance-panel"
+            className={`mt-3 rounded-xl border px-3.5 py-3 text-xs ${
+              result.provenance.verified_by_library
+                ? "border-emerald-200/90 bg-emerald-50/60 text-emerald-950 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-100"
+                : "border-amber-200/90 bg-amber-50/60 text-amber-950 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-100"
+            }`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <ShieldCheck className="h-4 w-4 shrink-0" />
+                <span className="font-semibold">
+                  {result.provenance.verified_by_library
+                    ? `Motor científico verificado (${result.provenance.runtime})`
+                    : "Motor TS de transición (no verificado por librería externa)"}
+                </span>
+                <span className="font-mono text-[11px] opacity-80">
+                  SHA-256 datos: {result.provenance.dataset_sha256.slice(0, 12)} · semilla: {result.provenance.seed}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {result.reproducible_script && (
+                  <button
+                    type="button"
+                    data-testid="download-repro-script-btn"
+                    onClick={() => {
+                      try {
+                        const blob = new Blob([result.reproducible_script!], { type: "text/x-python;charset=utf-8" });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = `avicena_${result.test}_${(result.provenance?.dataset_sha256 ?? "script").slice(0, 8)}.py`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                        toast.success("Script reproducible .py descargado.");
+                      } catch {
+                        toast.error("No se pudo descargar el script Python.");
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 rounded-full border border-black/[0.1] bg-white/80 px-2.5 py-1 text-[11px] font-medium text-[#1D1D1F] transition hover:bg-white dark:border-white/[0.15] dark:bg-[#1C1C1E] dark:text-[#F5F5F7]"
+                    title="Descargar script Python reproducible (Audit Trail)"
+                  >
+                    <Download className="h-3 w-3" />
+                    <FileCode2 className="h-3 w-3" />
+                    Script .py
+                  </button>
+                )}
+                {result.provenance.libraries.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const text = [
+                        `Métodos y librerías empleadas (${result.provenance!.runtime}, spec ${result.provenance!.spec_version}, hash datos ${result.provenance!.dataset_sha256.slice(0, 12)}):`,
+                        ...result.provenance!.libraries.map(
+                          (l) => `- ${l.package} v${l.version}: ${l.method}. Referencia: ${l.citation}`
+                        ),
+                      ].join("\n");
+                      try {
+                        await copyMarkdownToClipboard(text);
+                        setCopiedCitations(true);
+                        setTimeout(() => setCopiedCitations(false), 2000);
+                        toast.success("Citas metodológicas copiadas para el apartado de Métodos.");
+                      } catch {
+                        toast.error("No se pudieron copiar las citas.");
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 rounded-full border border-black/[0.1] bg-white/80 px-2.5 py-1 text-[11px] font-medium text-[#1D1D1F] transition hover:bg-white dark:border-white/[0.15] dark:bg-[#1C1C1E] dark:text-[#F5F5F7]"
+                  >
+                    {copiedCitations ? <Check className="h-3 w-3 text-emerald-600" /> : <BookOpen className="h-3 w-3" />}
+                    {copiedCitations ? "Citas copiadas" : "Citar en manuscrito"}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {!compact && result.provenance.libraries.length > 0 && (
+              <div className="mt-2 space-y-1 text-[11px] leading-relaxed opacity-90">
+                {result.provenance.libraries.map((lib, idx) => (
+                  <div key={idx}>
+                    <span className="font-mono font-semibold">
+                      {lib.package} v{lib.version}
+                    </span>
+                    {" — "}
+                    <span>{lib.method}.</span>{" "}
+                    <span className="italic">{lib.citation}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {result.provenance.warnings && result.provenance.warnings.length > 0 && (
+              <div className="mt-2 space-y-0.5 border-t border-black/[0.06] pt-1.5 text-[11px] opacity-85 dark:border-white/[0.08]">
+                {result.provenance.warnings.map((w, idx) => (
+                  <div key={idx}>• {w}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          showHistoricNotice && (
+            <div className="mt-3 rounded-xl border border-black/[0.08] bg-[#F5F5F7]/80 px-3.5 py-2 text-[11px] text-[#6E6E73] dark:border-white/[0.1] dark:bg-white/[0.04] dark:text-[#98989D]">
+              Histórico (sin hash de procedencia): análisis guardado antes de incorporar la verificación criptográfica de dataset y citas de librerías.
+            </div>
+          )
+        )}
       </div>
 
       {result.charts && result.charts.length > 0 && (
@@ -170,7 +298,13 @@ export function ResultView({ result, compact = false, onAskCopilot }: ResultView
                 </table>
               </div>
               {tbl.note && (
-                <div className="border-t border-black/[0.05] bg-[#F5F5F7]/50 px-5 py-2.5 text-xs text-[#6E6E73] dark:border-white/[0.06] dark:bg-white/[0.02] dark:text-[#98989D]">
+                <div
+                  className={`border-t px-5 py-2.5 text-xs ${
+                    tbl.note.includes("⚠")
+                      ? "border-amber-200/80 bg-amber-50/70 font-medium text-amber-900 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-200"
+                      : "border-black/[0.05] bg-[#F5F5F7]/50 text-[#6E6E73] dark:border-white/[0.06] dark:bg-white/[0.02] dark:text-[#98989D]"
+                  }`}
+                >
                   {tbl.note}
                 </div>
               )}

@@ -42,7 +42,7 @@ import {
 } from "../../lib/types.ts";
 import { FieldInput } from "../forms/FieldInput.tsx";
 
-const VAR_TYPES: VarType[] = ["numeric", "categorical", "binary", "date", "text"];
+const VAR_TYPES: VarType[] = ["numeric", "ordinal", "categorical", "binary", "date", "text"];
 
 const STATUS_BADGE: Record<CrfRecordStatus, string> = {
   borrador: "bg-zinc-500/10 text-zinc-700 dark:text-zinc-300",
@@ -368,6 +368,10 @@ export function DataTab({
             const s = String(raw).trim();
             if (s === "0" || s === "1") cleaned[v.name] = Number(s);
             else cleaned[v.name] = s;
+          } else if (v.type === "ordinal") {
+            const s = String(raw).trim();
+            const num = Number(s.replace(",", "."));
+            cleaned[v.name] = Number.isFinite(num) && /^-?\d+([.,]\d+)?$/.test(s) ? num : s;
           } else {
             cleaned[v.name] = String(raw).trim();
           }
@@ -973,7 +977,9 @@ export function DataTab({
                             onChange={(e) => setEditValues((prev) => ({ ...prev, [v.name]: e.target.value }))}
                             className={`${modalInputClass} font-mono`}
                           />
-                        ) : (v.type === "categorical" || v.type === "binary") && v.levels.length > 0 && v.levels.length <= 15 ? (
+                        ) : (v.type === "categorical" || v.type === "binary" || v.type === "ordinal") &&
+                          v.levels.length > 0 &&
+                          v.levels.length <= 15 ? (
                           <select
                             value={val === null || val === undefined ? "" : String(val)}
                             onChange={(e) => setEditValues((prev) => ({ ...prev, [v.name]: e.target.value }))}

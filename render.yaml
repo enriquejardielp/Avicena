@@ -1,16 +1,19 @@
 services:
   - type: web
     name: avicena
-    runtime: node
+    runtime: docker
     plan: free
-    buildCommand: npm install && npm run build
-    startCommand: npm start
+    dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
       - key: APP_ENV
         value: production
+      - key: STATS_PYTHON_BIN
+        value: /opt/stats-venv/bin/python
+      - key: REQUIRE_VERIFIED_ENGINE
+        value: "true"
       - key: AUDIT_HMAC_SECRET
         generateValue: true
       - key: VAULT_ENCRYPTION_SECRET

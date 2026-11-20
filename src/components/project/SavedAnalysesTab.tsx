@@ -161,6 +161,8 @@ export function SavedAnalysesTab({
         summary: active.summary,
         tables: active.tables,
         charts: active.charts,
+        ...(active.provenance ? { provenance: active.provenance } : {}),
+        ...(active.reproducible_script ? { reproducible_script: active.reproducible_script } : {}),
       }
     : null;
 
@@ -413,7 +415,11 @@ export function SavedAnalysesTab({
                 )}
               </div>
 
-              <ResultView result={activeResult} onAskCopilot={onAskCopilot} />
+              <ResultView
+                result={activeResult}
+                showHistoricNotice={!active.provenance}
+                onAskCopilot={onAskCopilot}
+              />
 
               {active.interpretation && (
                 <div className="apple-card rounded-2xl border border-black/[0.06] bg-white p-5 space-y-3 dark:border-white/[0.08] dark:bg-[#141416]">

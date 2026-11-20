@@ -35,6 +35,7 @@ import {
   StudyAccessError,
   type StudyPermission,
 } from "../server/studyAccess.ts";
+import { assessTestAssumptions } from "../src/lib/statAssumptions.ts";
 import type { Dataset, FormField, Role } from "../src/lib/types.ts";
 
 // Synthetic test identities & tokens (never real patient or user data)
@@ -1066,5 +1067,142 @@ describe("Avicena — Suite integral de seguridad, privacidad, RBAC y bioestadí
     assert.ok(!redacted.redactedText.includes("612345678"));
     assert.ok(!redacted.redactedText.includes("elena@ejemplo.es"));
   });
+
+  it("14. Variables ordinales, supuestos paramétricos vs. no paramétricos, Tabla 1 adaptativa e IC 95% en Kaplan-Meier", async () => {
+    const ordVars: Dataset["variables"] = [
+      { name: "grupo", label: "Brazo", type: "categorical", levels: ["Placebo", "Fármaco"] },
+      { name: "brazo3", label: "Dosis", type: "categorical", levels: ["Baja", "Media", "Alta"] },
+      { name: "gravedad", label: "Gravedad clínica", type: "ordinal", levels: ["Leve", "Moderado", "Grave"] },
+      { name: "dolor_eva", label: "Escala EVA (1-10)", type: "ordinal", levels: ["1", "2", "4", "6", "8", "9"] },
+      { name: "eva_t1", label: "EVA basal", type: "ordinal", levels: ["2", "4", "6", "8"] },
+      { name: "eva_t2", label: "EVA 1 mes", type: "ordinal", levels: ["1", "3", "5", "7"] },
+      { name: "eva_t3", label: "EVA 3 meses", type: "ordinal", levels: ["1", "2", "4", "6"] },
+      { name: "biomarcador_sesgado", label: "PCR sesgada", type: "numeric", levels: [] },
+      { name: "tiempo", label: "Meses", type: "numeric", levels: [] },
+      { name: "evento", label: "Evento", type: "binary", levels: ["0", "1"] },
+    ];
+
+    const ordRows = [
+      { grupo: "Placebo", brazo3: "Baja", gravedad: "Moderado", dolor_eva: 6, eva_t1: 6, eva_t2: 6, eva_t3: 5, biomarcador_sesgado: 2, tiempo: 4, evento: 1 },
+      { grupo: "Placebo", brazo3: "Baja", gravedad: "Grave", dolor_eva: 8, eva_t1: 8, eva_t2: 8, eva_t3: 7, biomarcador_sesgado: 3, tiempo: 6, evento: 1 },
+      { grupo: "Placebo", brazo3: "Media", gravedad: "Grave", dolor_eva: 9, eva_t1: 8, eva_t2: 7, eva_t3: 6, biomarcador_sesgado: 4, tiempo: 8, evento: 0 },
+      { grupo: "Placebo", brazo3: "Baja", gravedad: "Moderado", dolor_eva: 6, eva_t1: 6, eva_t2: 5, eva_t3: 5, biomarcador_sesgado: 2, tiempo: 10, evento: 1 },
+      { grupo: "Placebo", brazo3: "Media", gravedad: "Grave", dolor_eva: 8, eva_t1: 8, eva_t2: 7, eva_t3: 6, biomarcador_sesgado: 45, tiempo: 12, evento: 0 },
+      { grupo: "Placebo", brazo3: "Baja", gravedad: "Grave", dolor_eva: 9, eva_t1: 8, eva_t2: 8, eva_t3: 7, biomarcador_sesgado: 88, tiempo: 14, evento: 1 },
+      { grupo: "Fármaco", brazo3: "Alta", gravedad: "Leve", dolor_eva: 2, eva_t1: 6, eva_t2: 3, eva_t3: 2, biomarcador_sesgado: 1, tiempo: 7, evento: 0 },
+      { grupo: "Fármaco", brazo3: "Alta", gravedad: "Leve", dolor_eva: 1, eva_t1: 4, eva_t2: 2, eva_t3: 1, biomarcador_sesgado: 2, tiempo: 11, evento: 1 },
+      { grupo: "Fármaco", brazo3: "Media", gravedad: "Moderado", dolor_eva: 4, eva_t1: 6, eva_t2: 4, eva_t3: 2, biomarcador_sesgado: 2, tiempo: 15, evento: 0 },
+      { grupo: "Fármaco", brazo3: "Alta", gravedad: "Leve", dolor_eva: 2, eva_t1: 4, eva_t2: 3, eva_t3: 1, biomarcador_sesgado: 1, tiempo: 18, evento: 0 },
+      { grupo: "Fármaco", brazo3: "Alta", gravedad: "Leve", dolor_eva: 1, eva_t1: 6, eva_t2: 2, eva_t3: 1, biomarcador_sesgado: 3, tiempo: 20, evento: 0 },
+      { grupo: "Fármaco", brazo3: "Media", gravedad: "Moderado", dolor_eva: 4, eva_t1: 4, eva_t2: 3, eva_t3: 2, biomarcador_sesgado: 2, tiempo: 22, evento: 0 },
+    ];
+
+    // 1. Inferencia automática en XLSX reconoce escala ordinal clínica (Leve/Moderado/Grave) y columna EVA
+    const ws = XLSX.utils.json_to_sheet(ordRows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Ordinales");
+    const xlsxBuf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+    const parseRes = await requestJson("POST", "/api/parse-tabular", {
+      token: "tok-investigador",
+      body: {
+        projectId: "proj_synth_01",
+        filename: "cohorte_ordinal.xlsx",
+        contentBase64: xlsxBuf.toString("base64"),
+      },
+    });
+    assert.equal(parseRes.status, 200);
+    const inferred = parseRes.json.variables as Array<{ name: string; type: string; levels: string[] }>;
+    const gravedadVar = inferred.find((v) => v.name === "gravedad");
+    const evaVar = inferred.find((v) => v.name === "dolor_eva");
+    assert.equal(gravedadVar?.type, "ordinal");
+    assert.deepEqual(gravedadVar?.levels, ["Leve", "Moderado", "Grave"]);
+    assert.equal(evaVar?.type, "ordinal");
+
+    // 2. U de Mann-Whitney, Kruskal-Wallis (ANOVA) y Friedman funcionan sobre ordinales de texto y numéricos
+    const mwText = runStatTest("mannwhitney", ordRows, ordVars, { outcome: "gravedad", group: "grupo" });
+    assert.equal(mwText.tables.length >= 2, true);
+    assert.match(mwText.summary, /U = /);
+
+    const kwRes = runStatTest("anova", ordRows, ordVars, { outcome: "gravedad", group: "brazo3" });
+    assert.ok(kwRes.summary.includes("⚠") || kwRes.summary.includes("Kruskal-Wallis"));
+    assert.ok(kwRes.tables[1].rows.some((r) => String(r[0]).includes("Kruskal-Wallis")));
+
+    const friedmanOrd = runStatTest("friedman", ordRows, ordVars, { vars: ["eva_t1", "eva_t2", "eva_t3"] });
+    assert.match(friedmanOrd.summary, /Friedman/);
+
+    // 3. Advertencia cuando se intenta t de Student o Pearson sobre ordinal / no normal
+    const tWarn = runStatTest("ttest", ordRows, ordVars, { outcome: "gravedad", group: "grupo" });
+    assert.ok(tWarn.summary.includes("⚠"));
+
+    const pearsonWarn = runStatTest("correlation", ordRows, ordVars, {
+      vars: ["dolor_eva", "biomarcador_sesgado"],
+      method: "pearson",
+    });
+    assert.ok(pearsonWarn.summary.includes("⚠"));
+    assert.ok(pearsonWarn.tables[0].note.includes("Spearman"));
+
+    const spearmanOk = runStatTest("correlation", ordRows, ordVars, {
+      vars: ["gravedad", "dolor_eva"],
+      method: "spearman",
+    });
+    assert.equal(spearmanOk.tables[0].note, "");
+
+    // 4. Tabla 1 adapta automáticamente variables ordinales y continuas sesgadas a mediana (RIC) + p no paramétrico
+    const t1Res = runStatTest("table1", ordRows, ordVars, {
+      group: "grupo",
+      vars: ["gravedad", "biomarcador_sesgado"],
+    });
+    const t1Labels = t1Res.tables[0].rows.map((r) => String(r[0]));
+    assert.ok(t1Labels.some((lbl) => lbl.includes("gravedad, mediana (RIC) [ordinal]")));
+    assert.ok(t1Labels.some((lbl) => lbl.includes("biomarcador_sesgado, mediana (RIC)")));
+
+    // 5. Evaluador de supuestos en UI recomienda cambiar de ttest/pearson a no paramétrica
+    const uiWarnTtest = assessTestAssumptions({
+      test: "ttest",
+      rows: ordRows,
+      variables: ordVars,
+      outcome: "gravedad",
+      groupVar: "grupo",
+      secondVar: "",
+      multiVars: [],
+      corrMethod: "pearson",
+    });
+    assert.equal(uiWarnTtest?.severity, "warning");
+    assert.equal(uiWarnTtest?.recommendedTest, "mannwhitney");
+
+    const uiWarnCorr = assessTestAssumptions({
+      test: "correlation",
+      rows: ordRows,
+      variables: ordVars,
+      outcome: "",
+      groupVar: "",
+      secondVar: "",
+      multiVars: ["dolor_eva", "biomarcador_sesgado"],
+      corrMethod: "pearson",
+    });
+    assert.equal(uiWarnCorr?.severity, "warning");
+    assert.equal(uiWarnCorr?.recommendedCorrMethod, "spearman");
+
+    // 6. Kaplan-Meier incluye IC 95% Greenwood log-log en tabla y en cada punto del gráfico
+    const kmRes = runStatTest("kaplan_meier", ordRows, ordVars, {
+      time: "tiempo",
+      event: "evento",
+      group: "grupo",
+    });
+    const kmChart = kmRes.charts[0];
+    assert.equal(kmChart.type, "survival");
+    assert.equal(kmChart.meta?.hasConfidenceIntervals, true);
+    assert.ok(kmRes.tables[0].columns.includes("IC 95% S(t) final"));
+    for (const pt of kmChart.data) {
+      for (const s of kmChart.series) {
+        const val = Number(pt[s]);
+        const lo = Number(pt[`${s}__ci_lo`]);
+        const hi = Number(pt[`${s}__ci_hi`]);
+        assert.ok(Number.isFinite(lo) && Number.isFinite(hi));
+        assert.ok(lo >= 0 && lo <= val + 1e-4 && val <= hi + 1e-4 && hi <= 1);
+      }
+    }
+  });
 });
+
 

@@ -7,7 +7,7 @@ export type Role =
   | "admin_tecnico"
   | "capturador";
 
-export type VarType = "numeric" | "categorical" | "binary" | "date" | "text";
+export type VarType = "numeric" | "ordinal" | "categorical" | "binary" | "date" | "text";
 export type FieldType = "text" | "number" | "date" | "select" | "radio" | "checkbox" | "yesno" | "textarea";
 export type CrfRecordStatus = "borrador" | "completado" | "enviado" | "verificado" | "bloqueado";
 export type ConsentStatus = "vigente" | "retirado" | "pendiente" | "requiere_reconsentimiento";
@@ -20,12 +20,16 @@ export type DeviationStatus = "abierta" | "en_investigacion" | "capa_en_curso" |
 export type TestName =
   | "descriptives"
   | "frequencies"
+  | "outlier_detection"
+  | "missing_analysis"
   | "ttest"
   | "paired_ttest"
   | "mannwhitney"
   | "chi2"
   | "anova"
+  | "rm_anova"
   | "correlation"
+  | "icc"
   | "linreg"
   | "logreg"
   | "kaplan_meier"
@@ -33,12 +37,17 @@ export type TestName =
   | "friedman"
   | "mcnemar"
   | "epidemiology_2x2"
+  | "incidence_prevalence"
   | "diagnostic_test"
   | "roc_auc"
   | "kappa_agreement"
   | "cox_ph"
   | "poisson_reg"
-  | "sample_size";
+  | "negbin_reg"
+  | "sample_size"
+  | "multiple_testing"
+  | "ts_trend_seasonal"
+  | "ts_arima";
 
 export type Cell = string | number | boolean | null;
 
@@ -342,12 +351,34 @@ export interface ResultTable {
 }
 
 export interface ResultChart {
-  type: "histogram" | "bar" | "pie" | "box" | "scatter" | "heatmap" | "survival" | "groupedbar" | "roc";
+  type: "histogram" | "bar" | "pie" | "box" | "scatter" | "heatmap" | "survival" | "groupedbar" | "roc" | "line";
   title: string;
   data: Record<string, Cell>[];
   x: string;
   series: string[];
   meta: Record<string, Cell>;
+}
+
+export interface LibraryCitation {
+  package: string;
+  version: string;
+  method: string;
+  citation: string;
+  role: "core" | "modeling" | "survival" | "metrics" | "fallback";
+}
+
+export interface AnalysisProvenance {
+  spec_version: string;
+  spec_hash: string;
+  dataset_sha256: string;
+  engine: "python-scientific" | "ts-legacy";
+  engine_version: string;
+  runtime: string;
+  libraries: LibraryCitation[];
+  seed: number;
+  executed_at_utc: string;
+  verified_by_library: boolean;
+  warnings: string[];
 }
 
 export interface AnalysisResult {
@@ -356,6 +387,8 @@ export interface AnalysisResult {
   summary: string;
   tables: ResultTable[];
   charts: ResultChart[];
+  provenance?: AnalysisProvenance;
+  reproducible_script?: string;
 }
 
 export interface SavedAnalysis {
@@ -377,6 +410,11 @@ export interface SavedAnalysis {
   created_by_name: string;
   created_at: string;
   updated_at: string;
+  provenance?: AnalysisProvenance | null;
+  analysis_spec?: Record<string, unknown> | null;
+  spec_hash?: string | null;
+  dataset_sha256?: string | null;
+  reproducible_script?: string | null;
 }
 
 export interface ChatMessage {
@@ -424,6 +462,7 @@ export const CONSENT_STATUS_LABEL: Record<ConsentStatus, string> = {
 
 export const VAR_LABEL: Record<VarType, string> = {
   numeric: "Numérica",
+  ordinal: "Ordinal",
   categorical: "Categórica",
   binary: "Binaria",
   date: "Fecha",

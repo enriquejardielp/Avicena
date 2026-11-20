@@ -53,13 +53,13 @@ import { cn } from "../../lib/utils.ts";
 
 const PALETTE = [
   "#0071E3",
-  "#10B981",
-  "#F59E0B",
-  "#6366F1",
-  "#EC4899",
-  "#0EA5E9",
-  "#8B5CF6",
-  "#14B8A6",
+  "#059669",
+  "#D97706",
+  "#DC2626",
+  "#7C3AED",
+  "#0891B2",
+  "#EA580C",
+  "#4F46E5",
 ];
 
 function heatmapColors(r: number | null): { fill: string; text: string } {
@@ -490,11 +490,16 @@ export function SampleDashboardTab({
     if (!activeDs) return [];
     return activeDs.variables.filter(
       (v) =>
-        (v.type === "categorical" || v.type === "binary") &&
+        (v.type === "categorical" || v.type === "binary" || v.type === "ordinal") &&
         v.levels.length >= 1 &&
         v.levels.length <= 25
     );
   }, [activeDs]);
+
+  const ordCount = useMemo(
+    () => (activeDs ? activeDs.variables.filter((v) => v.type === "ordinal").length : 0),
+    [activeDs]
+  );
 
   const numVars = useMemo(() => {
     if (!activeDs) return [];
@@ -738,7 +743,7 @@ export function SampleDashboardTab({
             {numVars.length} / {catVars.length}
           </p>
           <p className="mt-1 text-[11px] text-[#6E6E73] dark:text-[#98989D]">
-            Numéricas · Categ./Binarias · {dateVars.length} fechas
+            Numéricas · {ordCount} ordinales · Categ./Binarias · {dateVars.length} fechas
           </p>
         </div>
 
