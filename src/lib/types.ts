@@ -342,7 +342,7 @@ export interface ResultTable {
 }
 
 export interface ResultChart {
-  type: "histogram" | "bar" | "box" | "scatter" | "survival" | "groupedbar" | "roc";
+  type: "histogram" | "bar" | "pie" | "box" | "scatter" | "heatmap" | "survival" | "groupedbar" | "roc";
   title: string;
   data: Record<string, Cell>[];
   x: string;

@@ -7,6 +7,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  onSnapshot,
   query,
   runTransaction,
   serverTimestamp,
@@ -1885,6 +1886,107 @@ export async function getDatasetWithRows(
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);
   }
+}
+
+export function subscribeProjectDataUpdates(
+  projectId: string,
+  activeDatasetId: string | undefined,
+  onUpdate: () => void
+): () => void {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let unsubRecShard: (() => void) | null = null;
+  let unsubVerShard: (() => void) | null = null;
+  let currentRecShardKey = "";
+  let currentVerShardKey = "";
+  let metaInitial = true;
+  let dsInitial = true;
+
+  const scheduleUpdate = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      onUpdate();
+    }, 280);
+  };
+
+  const attachShardListener = (
+    kind: "crfRecordIds" | "crfVersionIds",
+    shardCount: number
+  ) => {
+    if (shardCount <= 0) return;
+    const idx = shardCount - 1;
+    const key = `${kind}_${idx}`;
+    if (kind === "crfRecordIds" && key === currentRecShardKey) return;
+    if (kind === "crfVersionIds" && key === currentVerShardKey) return;
+
+    const shardRef = doc(db, "projects", projectId, "meta", shardDocId(kind, idx));
+    let initial = true;
+    const unsub = onSnapshot(
+      shardRef,
+      () => {
+        if (initial) {
+          initial = false;
+          return;
+        }
+        scheduleUpdate();
+      },
+      () => {}
+    );
+
+    if (kind === "crfRecordIds") {
+      unsubRecShard?.();
+      unsubRecShard = unsub;
+      currentRecShardKey = key;
+    } else {
+      unsubVerShard?.();
+      unsubVerShard = unsub;
+      currentVerShardKey = key;
+    }
+  };
+
+  const unsubMeta = onSnapshot(
+    doc(db, "projects", projectId, "meta", "index"),
+    (snap) => {
+      if (snap.exists()) {
+        const raw = snap.data() as { shardCounts?: Record<string, number> };
+        const sc = raw.shardCounts ?? {};
+        if (typeof sc.crfRecordIds === "number" && sc.crfRecordIds > 0) {
+          attachShardListener("crfRecordIds", sc.crfRecordIds);
+        }
+        if (typeof sc.crfVersionIds === "number" && sc.crfVersionIds > 0) {
+          attachShardListener("crfVersionIds", sc.crfVersionIds);
+        }
+      }
+      if (metaInitial) {
+        metaInitial = false;
+        return;
+      }
+      scheduleUpdate();
+    },
+    () => {}
+  );
+
+  const unsubDataset = activeDatasetId
+    ? onSnapshot(
+        doc(db, "projects", projectId, "datasets", activeDatasetId),
+        () => {
+          if (dsInitial) {
+            dsInitial = false;
+            return;
+          }
+          scheduleUpdate();
+        },
+        () => {}
+      )
+    : () => {};
+
+  return () => {
+    if (timer) clearTimeout(timer);
+    unsubMeta();
+    unsubDataset();
+    unsubRecShard?.();
+    unsubVerShard?.();
+  };
 }
 
 export async function updateDatasetVariableType(

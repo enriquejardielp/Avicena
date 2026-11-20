@@ -619,20 +619,33 @@ function runDescriptives(rows: Record<string, Cell>[], params: Record<string, un
         rn(sorted[sorted.length - 1], 2),
         fp(swP),
       ]);
-      if (charts.length < 2) charts.push(buildHistogram(nums, `Distribución de ${v}`));
+      if (charts.filter((c) => c.type === "histogram").length < 6) {
+        charts.push(buildHistogram(nums, `Distribución de ${v}`));
+      }
     } else {
       const lbls = rows.map((r) => toLbl(r[v]));
       const levels = getLevels(lbls);
       const valid = lbls.filter((x) => x !== null).length;
+      const catCounts = levels.map((lv) => {
+        const count = lbls.filter((x) => x === lv).length;
+        return { lv, count, pct: rn((100 * count) / Math.max(1, valid), 1) };
+      });
       tables.push({
         title: `Frecuencias: ${v}`,
         columns: ["Categoría", "n", "%"],
-        rows: levels.map((lv) => {
-          const count = lbls.filter((x) => x === lv).length;
-          return [lv, count, rn((100 * count) / Math.max(1, valid), 1)];
-        }),
+        rows: catCounts.map((c) => [c.lv, c.count, c.pct]),
         note: "",
       });
+      if (levels.length > 0 && levels.length <= 10 && charts.filter((c) => c.type === "pie").length < 4) {
+        charts.push({
+          type: "pie",
+          title: `Distribución circular de ${v}`,
+          x: "category",
+          series: ["n"],
+          data: catCounts.map((c) => ({ category: c.lv, n: c.count, pct: c.pct })),
+          meta: { valid },
+        });
+      }
     }
   }
 
@@ -671,16 +684,32 @@ function runFrequencies(rows: Record<string, Cell>[], params: Record<string, unk
   if (miss > 0) {
     tableRows.push(["Perdidos", miss, rn((100 * miss) / total, 1), null, null]);
   }
+  const chartRows = levels.map((lv) => {
+    const n = lbls.filter((x) => x === lv).length;
+    return {
+      category: lv,
+      n,
+      pct: valid ? rn((100 * n) / valid, 1) : 0,
+    };
+  });
   return {
     title: `Tabla de frecuencias: ${v}`,
     tables: [{ title: `Frecuencias: ${v}`, columns: ["Categoría", "n", "%", "% válido", "% acumulado"], rows: tableRows, note: "" }],
     charts: [
       {
+        type: "pie",
+        title: `Proporción circular de ${v}`,
+        x: "category",
+        series: ["n"],
+        data: chartRows,
+        meta: { valid },
+      },
+      {
         type: "bar",
         title: `Frecuencias de ${v}`,
         x: "category",
         series: ["n"],
-        data: levels.map((lv) => ({ category: lv, n: lbls.filter((x) => x === lv).length })),
+        data: chartRows,
         meta: {},
       },
     ],
@@ -1199,52 +1228,109 @@ function runCorrelation(rows: Record<string, Cell>[], params: Record<string, unk
     return row;
   });
 
-  const charts: ResultChart[] = [];
-  let summary = `Matriz de correlación (${method === "pearson" ? "Pearson" : "Spearman"}).`;
-  if (vars.length === 2) {
-    const x: number[] = [];
-    const y: number[] = [];
-    for (let i = 0; i < rows.length; i++) {
-      if (series[vars[0]][i] !== null && series[vars[1]][i] !== null) {
-        x.push(series[vars[0]][i]!);
-        y.push(series[vars[1]][i]!);
+  const heatmapData: Record<string, Cell>[] = [];
+  const pairCandidates: Array<{
+    v1: string;
+    v2: string;
+    x: number[];
+    y: number[];
+    r: number;
+    p: number;
+  }> = [];
+
+  for (let i1 = 0; i1 < vars.length; i1++) {
+    const v1 = vars[i1];
+    for (let i2 = 0; i2 < vars.length; i2++) {
+      const v2 = vars[i2];
+      if (v1 === v2) {
+        heatmapData.push({ rowVar: v1, colVar: v2, r: 1, p: 0, n: rows.length });
+        continue;
       }
-    }
-    if (x.length >= 3) {
-      const mx = mean(x);
-      const my = mean(y);
-      const sxy = x.reduce((s, xi, i) => s + (xi - mx) * (y[i] - my), 0);
-      const sxx = x.reduce((s, xi) => s + (xi - mx) ** 2, 0);
-      const slope = sxx > 0 ? sxy / sxx : 0;
-      const intercept = my - slope * mx;
+      const x: number[] = [];
+      const y: number[] = [];
+      for (let i = 0; i < rows.length; i++) {
+        if (series[v1][i] !== null && series[v2][i] !== null) {
+          x.push(series[v1][i]!);
+          y.push(series[v2][i]!);
+        }
+      }
+      if (x.length < 3) {
+        heatmapData.push({ rowVar: v1, colVar: v2, r: null, p: null, n: x.length });
+        continue;
+      }
       const res =
         method === "pearson"
           ? pearsonPair(x, y)
           : pearsonPair(ranksWithTies(x).ranks, ranksWithTies(y).ranks);
-      charts.push({
-        type: "scatter",
-        title: `${vars[1]} vs ${vars[0]}`,
-        x: "x",
-        series: ["y"],
-        data: x.slice(0, 800).map((xi, i) => ({ x: rn(xi), y: rn(y[i]) })),
-        meta: {
-          slope: rn(slope, 4),
-          intercept: rn(intercept, 4),
-          xlabel: vars[0],
-          ylabel: vars[1],
-          xmin: rn(Math.min(...x)),
-          xmax: rn(Math.max(...x)),
-        },
+      heatmapData.push({
+        rowVar: v1,
+        colVar: v2,
+        r: rn(res.r, 3),
+        p: rn(res.p, 4),
+        n: x.length,
       });
-      let ciTxt = "";
-      if (x.length >= 4 && Math.abs(res.r) < 0.9999) {
-        const z = 0.5 * Math.log((1 + res.r) / (1 - res.r));
-        const seZ = 1 / Math.sqrt(x.length - 3);
-        const lo = Math.tanh(z - 1.96 * seZ);
-        const hi = Math.tanh(z + 1.96 * seZ);
-        ciTxt = ` (IC 95%: ${rn(lo, 3)} – ${rn(hi, 3)})`;
+      if (i1 < i2 && Number.isFinite(res.r)) {
+        pairCandidates.push({ v1, v2, x, y, r: res.r, p: res.p });
       }
-      summary = `r = ${rn(res.r, 3)}${ciTxt}, p = ${fp(res.p)}, N = ${x.length}.`;
+    }
+  }
+
+  const charts: ResultChart[] = [];
+  let summary = `Matriz de correlación (${method === "pearson" ? "Pearson" : "Spearman"}).`;
+
+  if (heatmapData.length > 0) {
+    charts.push({
+      type: "heatmap",
+      title: `Mapa de calor de correlación (${method === "pearson" ? "Pearson r" : "Spearman ρ"})`,
+      x: "colVar",
+      series: vars,
+      data: heatmapData,
+      meta: { method },
+    });
+  }
+
+  const buildPairScatter = (pair: { v1: string; v2: string; x: number[]; y: number[]; r: number; p: number }): ResultChart => {
+    const mx = mean(pair.x);
+    const my = mean(pair.y);
+    const sxy = pair.x.reduce((s, xi, idx) => s + (xi - mx) * (pair.y[idx] - my), 0);
+    const sxx = pair.x.reduce((s, xi) => s + (xi - mx) ** 2, 0);
+    const slope = sxx > 0 ? sxy / sxx : 0;
+    const intercept = my - slope * mx;
+    return {
+      type: "scatter",
+      title: `${pair.v2} vs ${pair.v1} (${method === "pearson" ? "r" : "ρ"} = ${rn(pair.r, 3)}, p = ${fp(pair.p)})`,
+      x: "x",
+      series: ["y"],
+      data: pair.x.slice(0, 800).map((xi, idx) => ({ x: rn(xi), y: rn(pair.y[idx]) })),
+      meta: {
+        slope: rn(slope, 4),
+        intercept: rn(intercept, 4),
+        xlabel: pair.v1,
+        ylabel: pair.v2,
+        xmin: rn(Math.min(...pair.x)),
+        xmax: rn(Math.max(...pair.x)),
+        r: rn(pair.r, 3),
+        p: fp(pair.p),
+      },
+    };
+  };
+
+  if (vars.length === 2 && pairCandidates.length === 1) {
+    const pair = pairCandidates[0];
+    charts.unshift(buildPairScatter(pair));
+    let ciTxt = "";
+    if (pair.x.length >= 4 && Math.abs(pair.r) < 0.9999) {
+      const z = 0.5 * Math.log((1 + pair.r) / (1 - pair.r));
+      const seZ = 1 / Math.sqrt(pair.x.length - 3);
+      const lo = Math.tanh(z - 1.96 * seZ);
+      const hi = Math.tanh(z + 1.96 * seZ);
+      ciTxt = ` (IC 95%: ${rn(lo, 3)} – ${rn(hi, 3)})`;
+    }
+    summary = `r = ${rn(pair.r, 3)}${ciTxt}, p = ${fp(pair.p)}, N = ${pair.x.length}.`;
+  } else if (pairCandidates.length > 0) {
+    const topPairs = [...pairCandidates].sort((a, b) => Math.abs(b.r) - Math.abs(a.r)).slice(0, 3);
+    for (const pair of topPairs) {
+      charts.push(buildPairScatter(pair));
     }
   }
 

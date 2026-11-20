@@ -4,10 +4,13 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Cell as RechartsCell,
   ComposedChart,
   Legend,
   Line,
   LineChart,
+  Pie,
+  PieChart,
   ReferenceLine,
   ResponsiveContainer,
   Scatter,
@@ -20,7 +23,27 @@ import { toast } from "sonner";
 import { copyChartImageToClipboard, downloadChartPng } from "../../lib/clipboardExport.ts";
 import type { ResultChart } from "../../lib/types.ts";
 
-const PALETTE = ["#0071E3", "#10B981", "#F59E0B", "#6366F1", "#EC4899", "#0EA5E9"];
+const PALETTE = ["#0071E3", "#10B981", "#F59E0B", "#6366F1", "#EC4899", "#0EA5E9", "#8B5CF6", "#14B8A6"];
+
+function heatmapColor(r: number | null): { fill: string; text: string } {
+  if (r === null || !Number.isFinite(r)) {
+    return { fill: "rgba(148, 163, 184, 0.14)", text: "#64748B" };
+  }
+  const clamped = Math.max(-1, Math.min(1, r));
+  const abs = Math.abs(clamped);
+  if (clamped >= 0) {
+    const alpha = 0.12 + abs * 0.72;
+    return {
+      fill: `rgba(0, 113, 227, ${alpha.toFixed(2)})`,
+      text: abs > 0.52 ? "#FFFFFF" : "#0F172A",
+    };
+  }
+  const alpha = 0.12 + abs * 0.72;
+  return {
+    fill: `rgba(225, 29, 72, ${alpha.toFixed(2)})`,
+    text: abs > 0.52 ? "#FFFFFF" : "#0F172A",
+  };
+}
 
 function formatTick(v: unknown): string {
   if (typeof v === "number") return Number.isInteger(v) ? String(v) : v.toFixed(2);
@@ -103,11 +126,15 @@ export function StatChart({ chart, height = 300 }: { chart: ResultChart; height?
         ? `AUC = ${String(chart.meta?.auc ?? "—")}`
         : chart.type === "box"
           ? "Mediana, RIC (Q1–Q3) y Media"
-          : chart.type === "scatter"
-            ? `${String(chart.meta?.ylabel ?? "Y")} vs ${String(chart.meta?.xlabel ?? "X")}`
-            : isOr
-              ? "Línea de referencia = 1"
-              : undefined;
+          : chart.type === "pie"
+            ? "Proporciones y conteos válidos"
+            : chart.type === "heatmap"
+              ? "Escala divergente: azul positivo (+1) · rojo negativo (-1)"
+              : chart.type === "scatter"
+                ? `${String(chart.meta?.ylabel ?? "Y")} vs ${String(chart.meta?.xlabel ?? "X")}`
+                : isOr
+                  ? "Línea de referencia = 1"
+                  : undefined;
 
   const handleCopyChart = async () => {
     if (!chartBoxRef.current) return;
@@ -228,6 +255,144 @@ export function StatChart({ chart, height = 300 }: { chart: ResultChart; height?
           />
         </LineChart>
       </ResponsiveContainer>
+    );
+  } else if (chart.type === "pie") {
+    const valueKey = chart.series[0] || "n";
+    const nameKey = chart.x || "category";
+    const totalCount = chart.data.reduce((s, d) => s + Number(d[valueKey] ?? 0), 0);
+
+    body = (
+      <ResponsiveContainer width="100%" height="100%">
+        <PieChart>
+          <Pie
+            data={chart.data}
+            dataKey={valueKey}
+            nameKey={nameKey}
+            cx="50%"
+            cy="48%"
+            innerRadius="46%"
+            outerRadius="78%"
+            paddingAngle={2}
+            isAnimationActive={false}
+            label={({ name, percent }) => `${String(name)} (${((percent ?? 0) * 100).toFixed(1)}%)`}
+            labelLine={{ stroke: "rgba(148, 163, 184, 0.55)", strokeWidth: 1 }}
+          >
+            {chart.data.map((_, idx) => (
+              <RechartsCell key={idx} fill={PALETTE[idx % PALETTE.length]} />
+            ))}
+          </Pie>
+          <Tooltip
+            formatter={(val: unknown, name: unknown) => {
+              const num = Number(val ?? 0);
+              const pct = totalCount > 0 ? ((num / totalCount) * 100).toFixed(1) : "0.0";
+              return [`${num} (${pct}%)`, String(name)];
+            }}
+            contentStyle={{
+              backgroundColor: "rgba(255,255,255,0.96)",
+              borderRadius: "12px",
+              border: "1px solid rgba(0,0,0,0.08)",
+              fontSize: "12px",
+              color: "#0F172A",
+            }}
+          />
+          <Legend wrapperStyle={{ fontSize: 12 }} />
+        </PieChart>
+      </ResponsiveContainer>
+    );
+  } else if (chart.type === "heatmap") {
+    const vars = chart.series;
+    const n = vars.length;
+    const cellSize = Math.max(46, Math.min(76, Math.floor(340 / Math.max(1, n))));
+    const labelW = 110;
+    const labelH = 38;
+    const svgW = labelW + n * cellSize + 16;
+    const svgH = labelH + n * cellSize + 16;
+
+    const lookup = new Map<string, { r: number | null; p: number | null }>();
+    for (const row of chart.data) {
+      const k = `${String(row.rowVar)}::${String(row.colVar)}`;
+      lookup.set(k, {
+        r: row.r === null || row.r === undefined ? null : Number(row.r),
+        p: row.p === null || row.p === undefined ? null : Number(row.p),
+      });
+    }
+
+    body = (
+      <div className="flex h-full w-full items-center justify-center overflow-auto">
+        <svg
+          viewBox={`0 0 ${svgW} ${svgH}`}
+          width={svgW}
+          height={svgH}
+          className="max-h-full max-w-full select-none"
+          role="img"
+          aria-label={chart.title}
+        >
+          {vars.map((v, idx) => (
+            <text
+              key={`col-${v}`}
+              x={labelW + idx * cellSize + cellSize / 2}
+              y={labelH - 10}
+              textAnchor="middle"
+              fontSize={11}
+              fontWeight={600}
+              fill="currentColor"
+            >
+              {v.length > 10 ? `${v.slice(0, 9)}…` : v}
+            </text>
+          ))}
+
+          {vars.map((rowVar, rIdx) => (
+            <g key={`row-${rowVar}`}>
+              <text
+                x={labelW - 10}
+                y={labelH + rIdx * cellSize + cellSize / 2 + 4}
+                textAnchor="end"
+                fontSize={11}
+                fontWeight={600}
+                fill="currentColor"
+              >
+                {rowVar.length > 14 ? `${rowVar.slice(0, 13)}…` : rowVar}
+              </text>
+              {vars.map((colVar, cIdx) => {
+                const entry = lookup.get(`${rowVar}::${colVar}`) ?? { r: null, p: null };
+                const { fill, text } = heatmapColor(entry.r);
+                const xPos = labelW + cIdx * cellSize;
+                const yPos = labelH + rIdx * cellSize;
+                return (
+                  <g key={`${rowVar}-${colVar}`}>
+                    <rect
+                      x={xPos + 2}
+                      y={yPos + 2}
+                      width={cellSize - 4}
+                      height={cellSize - 4}
+                      rx={8}
+                      fill={fill}
+                      stroke="rgba(148,163,184,0.22)"
+                      strokeWidth={1}
+                    >
+                      <title>
+                        {`${rowVar} × ${colVar}: r = ${entry.r !== null ? entry.r.toFixed(3) : "—"}${
+                          entry.p !== null && rowVar !== colVar ? ` (p = ${entry.p < 0.001 ? "<0.001" : entry.p.toFixed(3)})` : ""
+                        }`}
+                      </title>
+                    </rect>
+                    <text
+                      x={xPos + cellSize / 2}
+                      y={yPos + cellSize / 2 + 4}
+                      textAnchor="middle"
+                      fontSize={11}
+                      fontWeight={600}
+                      fill={text}
+                    >
+                      {entry.r !== null ? entry.r.toFixed(2) : "—"}
+                    </text>
+                  </g>
+                );
+              })}
+            </g>
+          ))}
+        </svg>
+      </div>
     );
   } else if (chart.type === "histogram" || chart.type === "bar" || chart.type === "groupedbar") {
     body = (

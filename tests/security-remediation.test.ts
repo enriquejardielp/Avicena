@@ -860,6 +860,24 @@ describe("Avicena — Suite integral de seguridad, privacidad, RBAC y bioestadí
       assert.ok(res.tables.length >= 1, `Esperadas tablas en ${c.test}`);
       assert.ok(res.summary.length > 5, `Esperado resumen en ${c.test}`);
     }
+
+    // Verificación de gráficos ampliados (circulares, histogramas, matriz de calor y dispersión)
+    const descRes = runStatTest("descriptives", bioRows, bioVars, {
+      vars: ["pas_base", "edad", "grupo", "brazo3"],
+    });
+    assert.ok(descRes.charts.some((ch) => ch.type === "histogram"));
+    assert.ok(descRes.charts.some((ch) => ch.type === "pie"));
+
+    const freqRes = runStatTest("frequencies", bioRows, bioVars, { var: "brazo3" });
+    assert.ok(freqRes.charts.some((ch) => ch.type === "pie"));
+    assert.ok(freqRes.charts.some((ch) => ch.type === "bar"));
+
+    const corrRes = runStatTest("correlation", bioRows, bioVars, {
+      vars: ["pas_base", "pas_6m", "edad"],
+      method: "pearson",
+    });
+    assert.ok(corrRes.charts.some((ch) => ch.type === "heatmap"));
+    assert.ok(corrRes.charts.some((ch) => ch.type === "scatter"));
   });
 
   it("11. Aprobación electrónica reautenticada (/api/signatures/sign): exige auth_time reciente, RBAC estricto y rotación HMAC", async () => {

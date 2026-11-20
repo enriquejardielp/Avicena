@@ -8,6 +8,7 @@ import {
   FileCheck2,
   KeyRound,
   MessageSquareText,
+  PieChart,
   ShieldAlert,
   Trash2,
   Users,
@@ -21,6 +22,7 @@ import { DataTab } from "../components/project/DataTab.tsx";
 import { FormsTab } from "../components/project/FormsTab.tsx";
 import { MembersTab } from "../components/project/MembersTab.tsx";
 import { MonitoringTab } from "../components/project/MonitoringTab.tsx";
+import { SampleDashboardTab } from "../components/project/SampleDashboardTab.tsx";
 import { SavedAnalysesTab } from "../components/project/SavedAnalysesTab.tsx";
 import { VaultConsentTab } from "../components/project/VaultConsentTab.tsx";
 import { errMsg } from "../lib/api.ts";
@@ -32,6 +34,7 @@ import {
   listDatasets,
   listForms,
   listSavedAnalyses,
+  subscribeProjectDataUpdates,
 } from "../lib/firestoreDb.ts";
 import { Link, useNavigate } from "../lib/router.tsx";
 import {
@@ -48,6 +51,7 @@ import { cn } from "../lib/utils.ts";
 
 type TabId =
   | "datos"
+  | "muestra"
   | "bioestadistica"
   | "guardados"
   | "ia"
@@ -70,6 +74,7 @@ export default function ProjectPage({ projectId }: { projectId: string }) {
   const [pendingCopilotPrompt, setPendingCopilotPrompt] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [liveRefreshTick, setLiveRefreshTick] = useState(0);
 
   const me: Me | null = user
     ? {
@@ -130,6 +135,37 @@ export default function ProjectPage({ projectId }: { projectId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, user?.uid]);
 
+  useEffect(() => {
+    if (!user || !project) return;
+    if (project.my_role === "admin_tecnico" || project.my_role === "capturador") return;
+
+    let cancelled = false;
+    const unsubscribe = subscribeProjectDataUpdates(
+      projectId,
+      activeDatasetId || undefined,
+      () => {
+        if (cancelled) return;
+        void listDatasets(projectId)
+          .then((dsRes) => {
+            if (cancelled) return;
+            setDatasets(dsRes);
+            setActiveDatasetId((prev) =>
+              prev && dsRes.some((d) => d.id === prev) ? prev : dsRes[0]?.id ?? ""
+            );
+            setLiveRefreshTick((tick) => tick + 1);
+          })
+          .catch(() => {
+            // Ignora fallos transitorios de sincronización en segundo plano
+          });
+      }
+    );
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [projectId, user, project?.my_role, activeDatasetId]);
+
   const handleDeleteProject = async () => {
     if (!project || !user) return;
     try {
@@ -174,6 +210,7 @@ export default function ProjectPage({ projectId }: { projectId: string }) {
 
   const tabs: { id: TabId; label: string; icon: typeof Database; hidden?: boolean }[] = [
     { id: "datos", label: "Datos", icon: Database, hidden: !canSeeDatos },
+    { id: "muestra", label: "Descripción de la muestra", icon: PieChart, hidden: !canSeeDatos },
     { id: "bioestadistica", label: "Bioestadística", icon: BarChart3, hidden: !canSeeBioestadisticaAndAi },
     { id: "guardados", label: `Análisis guardados (${savedAnalyses.length})`, icon: Archive, hidden: !canSeeGuardados },
     { id: "ia", label: "Asistente IA", icon: MessageSquareText, hidden: !canSeeBioestadisticaAndAi },
@@ -292,6 +329,18 @@ export default function ProjectPage({ projectId }: { projectId: string }) {
                 canEdit={Boolean(project?.can_edit)}
                 canExport={Boolean(project?.can_export_data)}
                 myRole={myRole}
+                refreshSignal={liveRefreshTick}
+                onOpenSampleDashboard={() => setActiveTab("muestra")}
+              />
+            )}
+
+            {activeTab === "muestra" && canSeeDatos && (
+              <SampleDashboardTab
+                projectId={projectId}
+                datasets={datasets}
+                activeDatasetId={activeDatasetId}
+                onSelectDataset={setActiveDatasetId}
+                refreshSignal={liveRefreshTick}
               />
             )}
 

@@ -6,6 +6,7 @@ import {
   FilePlus2,
   Lock,
   Pencil,
+  PieChart,
   Save,
   Search,
   ShieldCheck,
@@ -61,6 +62,8 @@ interface DataTabProps {
   canEdit: boolean;
   canExport: boolean;
   myRole?: Role;
+  refreshSignal?: number;
+  onOpenSampleDashboard?: () => void;
 }
 
 export function DataTab({
@@ -73,6 +76,8 @@ export function DataTab({
   canEdit,
   canExport,
   myRole,
+  refreshSignal = 0,
+  onOpenSampleDashboard,
 }: DataTabProps) {
   const { user } = useAuth();
   const [loadedDataset, setLoadedDataset] = useState<Dataset | null>(null);
@@ -88,6 +93,7 @@ export function DataTab({
     identifierColumns: string[];
     piiWarnings: string[];
   } | null>(null);
+  const [recentUploadInfo, setRecentUploadInfo] = useState<{ name: string; rows: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const limit = 30;
 
@@ -157,7 +163,7 @@ export function DataTab({
   useEffect(() => {
     void loadDatasetData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, activeDatasetId, selectedDatasetMeta?.n_rows]);
+  }, [projectId, activeDatasetId, selectedDatasetMeta?.n_rows, refreshSignal]);
 
   const filteredItems = useMemo(() => {
     const q = debouncedSearch.trim().toLowerCase();
@@ -207,6 +213,7 @@ export function DataTab({
       } else {
         toast.success(`Base «${created.name}» importada (${created.n_rows} registros).`);
       }
+      setRecentUploadInfo({ name: created.name, rows: created.n_rows });
       onDatasetsChanged();
       onSelectDataset(created.id);
     } catch (err) {
@@ -466,6 +473,18 @@ export function DataTab({
             </button>
           )}
 
+          {activeDs && onOpenSampleDashboard && (
+            <button
+              type="button"
+              onClick={onOpenSampleDashboard}
+              className="inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 rounded-full border border-[#0071E3]/30 bg-[#0071E3]/[0.08] px-4 py-2 text-xs font-medium text-[#0071E3] transition-colors hover:bg-[#0071E3]/[0.14] dark:border-[#0A84FF]/40 dark:bg-[#0A84FF]/[0.12] dark:text-[#0A84FF]"
+              data-testid="open-sample-dashboard-btn"
+            >
+              <PieChart className="h-3.5 w-3.5" />
+              Descripción de la muestra
+            </button>
+          )}
+
           {activeDs && canExport && (
             <button
               type="button"
@@ -495,6 +514,38 @@ export function DataTab({
           )}
         </div>
       </div>
+
+      {/* Ready-to-view Sample Dashboard Notification */}
+      {recentUploadInfo && onOpenSampleDashboard && (
+        <div
+          data-testid="sample-dashboard-ready-banner"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#0071E3]/25 bg-[#0071E3]/[0.06] px-4 py-3 text-xs text-[#1D1D1F] dark:border-[#0A84FF]/35 dark:bg-[#0A84FF]/10 dark:text-[#F5F5F7]"
+        >
+          <div className="flex items-center gap-2.5">
+            <PieChart className="h-4 w-4 shrink-0 text-[#0071E3] dark:text-[#0A84FF]" />
+            <span>
+              Panel <strong>Descripción de la muestra</strong> generado automáticamente para{" "}
+              <strong>{recentUploadInfo.name}</strong> ({recentUploadInfo.rows} registros) y sincronizado en tiempo real.
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onOpenSampleDashboard}
+              className="inline-flex items-center gap-1 rounded-full bg-[#0071E3] px-3.5 py-1.5 text-[11px] font-medium text-white transition-colors hover:bg-[#0077ED] dark:bg-[#0A84FF]"
+            >
+              Ver gráficos de la muestra
+            </button>
+            <button
+              type="button"
+              onClick={() => setRecentUploadInfo(null)}
+              className="text-[11px] font-medium text-[#6E6E73] hover:underline dark:text-[#98989D]"
+            >
+              Ocultar
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Upload Privacy / PII Warning Banner */}
       {uploadWarnings && (
